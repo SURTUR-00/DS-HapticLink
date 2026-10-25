@@ -83,6 +83,12 @@ def restart_instances(instance_ids, log=print):
             kind = VETO_TYPES[veto_type.value] if 0 <= veto_type.value < len(VETO_TYPES) else veto_type.value
             log(f"couldn't disable {inst} (CR={r:#x}, veto={kind} {veto_name.value!r}, "
                 f"{time.monotonic() - t0:.1f} s)")
+            # Con CM_REMOVE_DISABLE, Windows puede dejar el dispositivo MARCADO como deshabilitado aunque el retiro
+            # se vete: sigue funcionando, pero la próxima vez que se reinicie (p. ej. al instalar usbip-win2) queda
+            # apagado (código 22) y el control "desaparece". Pasó en una prueba real. Habilitarlo quita la marca
+            # (en un dispositivo que ya funciona no hace nada).
+            r = cfg.CM_Enable_DevNode(dn, 0)
+            log(f"  kept enabled ({'ok' if r == CR_SUCCESS else f'CR={r:#x}'})")
             continue
         log(f"disabled in {time.monotonic() - t0:.1f} s")
         time.sleep(0.3)
@@ -94,6 +100,48 @@ def restart_instances(instance_ids, log=print):
         log(f"restarted {inst}" if r == CR_SUCCESS else f"COULDN'T RE-ENABLE {inst}! (CR={r:#x})")
         done += r == CR_SUCCESS
     return done
+
+
+CM_GETIDLIST_FILTER_ENUMERATOR = 0x1
+DN_HAS_PROBLEM = 0x400
+CM_PROB_DISABLED = 22
+
+
+def disabled_dualsense():
+    """Identificadores de los HID de DualSense que están deshabilitados (no requiere administrador)."""
+    cfg = ctypes.WinDLL("cfgmgr32")
+    size = wintypes.ULONG()
+    if cfg.CM_Get_Device_ID_List_SizeW(ctypes.byref(size), "HID", CM_GETIDLIST_FILTER_ENUMERATOR) != CR_SUCCESS:
+        return []
+    buf = ctypes.create_unicode_buffer(size.value)
+    if cfg.CM_Get_Device_ID_ListW("HID", buf, size.value, CM_GETIDLIST_FILTER_ENUMERATOR) != CR_SUCCESS:
+        return []
+    found = []
+    for inst in buf[:size.value].split("\0"):
+        if not inst or not ALLOWED.match(inst):
+            continue
+        dn, status, problem = wintypes.DWORD(), wintypes.ULONG(), wintypes.ULONG()
+        if cfg.CM_Locate_DevNodeW(ctypes.byref(dn), inst, 0) != CR_SUCCESS:
+            continue
+        if cfg.CM_Get_DevNode_Status(ctypes.byref(status), ctypes.byref(problem), dn, 0) != CR_SUCCESS:
+            continue
+        if status.value & DN_HAS_PROBLEM and problem.value == CM_PROB_DISABLED:
+            found.append(inst)
+    return found
+
+
+def enable_disabled_dualsense(log=print):
+    """Red de seguridad (requiere administrador): vuelve a habilitar los DualSense que hayan quedado
+    deshabilitados. Lo ejecutan la tarea en cada reinicio y la instalación (Install components)."""
+    cfg = ctypes.WinDLL("cfgmgr32")
+    fixed = 0
+    for inst in disabled_dualsense():
+        dn = wintypes.DWORD()
+        if cfg.CM_Locate_DevNodeW(ctypes.byref(dn), inst, 0) == CR_SUCCESS:
+            r = cfg.CM_Enable_DevNode(dn, 0)
+            log(f"re-enabled a disabled DualSense: {inst} ({'ok' if r == CR_SUCCESS else f'CR={r:#x}'})")
+            fixed += r == CR_SUCCESS
+    return fixed
 
 
 # ---------------------------------------------------------------------------------------------- tarea
@@ -236,6 +284,7 @@ def _task_main():
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
 
         log(f"task started (admin={is_admin()}, request={REQUEST_FILE})")
+        enable_disabled_dualsense(log=log)
         try:
             ids = REQUEST_FILE.read_text(encoding="utf-8").splitlines()
         except OSError as e:

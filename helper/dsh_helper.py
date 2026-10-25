@@ -216,6 +216,7 @@ def install(lang):
 
 def _install(progress):
     progress("start", 1)
+    devrestart.enable_disabled_dualsense(log=log)  # reparar un control que haya quedado deshabilitado
     # 1. usbip-win2 (si falta o quedó incompleto)
     if devrestart.usbip_installed():
         progress("usbip_ok", 50)

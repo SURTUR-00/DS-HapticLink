@@ -18,6 +18,9 @@ sessions.
 **Fixes during testing (0.4.1 – 0.4.9)**
 - Fewer antivirus false positives: the helper no longer starts PowerShell (the usbip-win2 signature is checked
   with Windows' own `WinVerifyTrust`), and the scheduled task now has an author and a description.
+- The controller could be left **disabled** in Windows (Device Manager code 22) when another program blocked a
+  restart: it kept working until the next device reset, then "disappeared". The device is now always re-enabled
+  after a blocked restart, and every restart and *Install components* repairs any DualSense left disabled.
 - usbip-win2 is only considered installed if all its files are there: after uninstalling it without
   restarting, a leftover `usbip.exe` made the next setup skip the driver ("libusbip.dll was not found").
 - The scheduled task now **also runs on battery**: on a laptop without its charger the controller was never
