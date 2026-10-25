@@ -116,20 +116,83 @@ def task_ready():
     return bool(command) and Path(command).exists()
 
 
-def install_task(action=None):
+TASK_DESCRIPTION = (
+    "DS HapticLink: restarts your DualSense (Bluetooth) when the DS HapticLink app asks for it, so the app can "
+    "use it exclusively and games see only its virtual wired DualSense. It only touches DualSense HID devices and "
+    "runs on demand (no schedule). Source code: https://github.com/SURTUR-00/DS-HapticLink")
+
+
+def task_xml(command, arguments, user):
+    """Definición completa de la tarea. Con `schtasks /create /tr` no se puede poner descripción, y Windows le
+    deja "no iniciar con batería" (en una laptop sin cargador el control nunca se reiniciaba)."""
+    from xml.sax.saxutils import escape
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>DS HapticLink</Author>
+    <Description>{escape(TASK_DESCRIPTION)}</Description>
+    <URI>\\{escape(TASK_NAME)}</URI>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{escape(user)}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT2M</ExecutionTimeLimit>
+    <Priority>4</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(command)}</Command>
+      <Arguments>{escape(arguments)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def install_task(command=None, arguments="", xml_dir=None):
     """Crea la tarea (requiere administrador): con privilegios elevados, para el usuario actual y solo con la
-    sesión iniciada (no guarda contraseña).
-    action: comando a ejecutar. En el producto es 'C:\\Program Files\\DSHapticLink Helper\\dsh-helper.exe restart' (una ruta
-    que solo un administrador puede modificar). Por defecto, en desarrollo, este archivo con pythonw."""
-    if action is None:
+    sesión iniciada (no guarda contraseña), sin horario (solo a pedido) y también con batería.
+    command: en el producto, C:\\Program Files\\DSHapticLink Helper\\dsh-helper.exe (con arguments="restart"): una
+    ruta que solo un administrador puede modificar. Por defecto, en desarrollo, este archivo con pythonw.
+    xml_dir: carpeta donde escribir la definición; en el producto, una solo de administradores (si fuera
+    escribible por el usuario, podría cambiarla antes de que schtasks la lea)."""
+    if command is None:
         python_exe = Path(sys.executable)
         # pythonw.exe: sin ventana de consola (python.exe abriría una que le roba el foco al puente).
         windowless = python_exe.with_name("pythonw.exe")
         if windowless.exists():
             python_exe = windowless
-        action = f'"{python_exe}" -I "{Path(__file__).resolve()}"'
-    return _schtasks("/create", "/tn", TASK_NAME, "/tr", action, "/sc", "once", "/st", "00:00",
-                     "/rl", "highest", "/it", "/f")
+        command, arguments = str(python_exe), f'-I "{Path(__file__).resolve()}"'
+    user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}".lstrip("\\")
+    import tempfile
+    folder = Path(xml_dir) if xml_dir else Path(tempfile.mkdtemp(prefix="dsh_task_"))
+    folder.mkdir(parents=True, exist_ok=True)
+    xml_file = folder / "RestartDualSense.xml"
+    xml_file.write_text(task_xml(command, arguments, user), encoding="utf-16")
+    try:
+        return _schtasks("/create", "/tn", TASK_NAME, "/xml", str(xml_file), "/f")
+    finally:
+        xml_file.unlink(missing_ok=True)
 
 
 def uninstall_task():

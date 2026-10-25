@@ -59,8 +59,9 @@ your controller wirelessly.
 <p align="center"><img src="docs/images/setup.png" width="520" alt="Initial setup"></p>
 
 > **Windows SmartScreen** may show "Windows protected your PC" the first time, because the app isn't
-> code-signed (certificates cost money and this is a free project). Click **More info → Run anyway**. Some
-> antivirus programs may also flag it by mistake; you can check the source code and build it yourself.
+> code-signed (certificates cost money and this is a free project). Click **More info → Run anyway**. Windows
+> Defender or other antivirus programs may also flag it by mistake: see
+> [Tips and known issues](#tips-and-known-issues).
 
 ## Using it
 
@@ -99,8 +100,13 @@ others in [Issues](../../issues)!
 > 2. Open DS HapticLink: it notices the missing component and shows **Install components** again; click it to
 >    repair.
 >
-> You can review everything the helper does in [`helper/dsh_helper.py`](helper/dsh_helper.py) and
-> [`bridge/devrestart.py`](bridge/devrestart.py), check the release zip's SHA-256, or build it yourself.
+> **Other antivirus programs may alert too**, for the same reason: to work, DS HapticLink has to do things that
+> malware also does (install a driver, run an elevated scheduled task, restart a device, open the controller
+> exclusively). The app isn't code-signed because certificates cost money and this is a free project.
+>
+> **Everything is open source**, so you don't have to take our word for it: review what the helper does in
+> [`helper/dsh_helper.py`](helper/dsh_helper.py) and [`bridge/devrestart.py`](bridge/devrestart.py), compare the
+> release zip's SHA-256, or [build it yourself](docs/DEVELOPMENT.md) from the source.
 
 - **Zenless Zone Zero (and Genshin Impact):** set the DualSense audio device to *Quadraphonic* with all
   full-range speakers enabled (Sound control panel → DualSense Wireless Controller → Configure) before opening

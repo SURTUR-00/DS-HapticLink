@@ -129,11 +129,45 @@ def frozen():
 
 
 def authenticode_ok(path):
-    """Firma Authenticode válida (vía PowerShell, que trae Windows)."""
-    cmd = f"(Get-AuthenticodeSignature -LiteralPath '{path}').Status -eq 'Valid'"
-    p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True,
-                       encoding="oem", errors="replace", creationflags=CREATE_NO_WINDOW, timeout=60)
-    return p.stdout.strip() == "True"
+    """Firma Authenticode válida, con WinVerifyTrust (la misma comprobación que Get-AuthenticodeSignature).
+    Antes se lanzaba PowerShell para esto: un programa sin firma que abre PowerShell como administrador es de lo
+    que más alerta a los antivirus (Defender marcó el helper como Behavior:Win32/Execution.A!ml)."""
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD),
+                    ("Data4", ctypes.c_ubyte * 8)]
+
+    class WINTRUST_FILE_INFO(ctypes.Structure):
+        _fields_ = [("cbStruct", wintypes.DWORD), ("pcwszFilePath", wintypes.LPCWSTR), ("hFile", wintypes.HANDLE),
+                    ("pgKnownSubject", ctypes.c_void_p)]
+
+    class WINTRUST_DATA(ctypes.Structure):
+        _fields_ = [("cbStruct", wintypes.DWORD), ("pPolicyCallbackData", ctypes.c_void_p),
+                    ("pSIPClientData", ctypes.c_void_p), ("dwUIChoice", wintypes.DWORD),
+                    ("fdwRevocationChecks", wintypes.DWORD), ("dwUnionChoice", wintypes.DWORD),
+                    ("pFile", ctypes.POINTER(WINTRUST_FILE_INFO)), ("dwStateAction", wintypes.DWORD),
+                    ("hWVTStateData", wintypes.HANDLE), ("pwszURLReference", wintypes.LPCWSTR),
+                    ("dwProvFlags", wintypes.DWORD), ("dwUIContext", wintypes.DWORD),
+                    ("pSignatureSettings", ctypes.c_void_p)]
+
+    WTD_UI_NONE, WTD_REVOKE_NONE, WTD_CHOICE_FILE = 2, 0, 1
+    WTD_STATEACTION_VERIFY, WTD_STATEACTION_CLOSE = 1, 2
+    # WINTRUST_ACTION_GENERIC_VERIFY_V2 = {00AAC56B-CD44-11d0-8CC2-00C04FC295EE}
+    action = GUID(0x00AAC56B, 0xCD44, 0x11D0, (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE))
+    file_info = WINTRUST_FILE_INFO(ctypes.sizeof(WINTRUST_FILE_INFO), str(path), None, None)
+    data = WINTRUST_DATA(cbStruct=ctypes.sizeof(WINTRUST_DATA), dwUIChoice=WTD_UI_NONE,
+                         fdwRevocationChecks=WTD_REVOKE_NONE, dwUnionChoice=WTD_CHOICE_FILE,
+                         pFile=ctypes.pointer(file_info), dwStateAction=WTD_STATEACTION_VERIFY)
+    wintrust = ctypes.WinDLL("wintrust")
+    wintrust.WinVerifyTrust.restype = ctypes.c_long
+    wintrust.WinVerifyTrust.argtypes = [wintypes.HWND, ctypes.POINTER(GUID), ctypes.c_void_p]
+    result = wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
+    data.dwStateAction = WTD_STATEACTION_CLOSE
+    wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(data))
+    if result != 0:
+        log(f"signature check failed for {path}: WinVerifyTrust 0x{result & 0xFFFFFFFF:08X}")
+    return result == 0
 
 
 def download_usbip(progress):
@@ -224,11 +258,11 @@ def _install(progress):
                 shutil.rmtree(PROTECTED_DIR, ignore_errors=True)
             # (sin el instalador de usbip-win2: no hace falta ahí y pesa 26 MB)
             shutil.copytree(source, PROTECTED_DIR, ignore=shutil.ignore_patterns("USBip-*.exe"))
-        action = f'"{PROTECTED_DIR / "dsh-helper.exe"}" restart'
+        task = {"command": str(PROTECTED_DIR / "dsh-helper.exe"), "arguments": "restart", "xml_dir": PROTECTED_DIR}
     else:
-        action = None  # desarrollo: python + bridge/devrestart.py
+        task = {}  # desarrollo: python + bridge/devrestart.py
     progress("task", 92)
-    code, out = devrestart.install_task(action)
+    code, out = devrestart.install_task(**task)
     if code != 0:
         progress("task_fail", 0, ok=False, msg=out)
         return 5

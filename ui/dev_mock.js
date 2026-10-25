@@ -13,7 +13,7 @@
   const pad = (params.get("lang") || "es") === "en" ? "Living room controller" : "Control de la sala";
   window.pywebview = {
     api: {
-      get_info: async () => ({ name: "DS HapticLink", version: "0.4.8" }),
+      get_info: async () => ({ name: "DS HapticLink", version: "0.4.9" }),
       get_settings: async () => ({ ...s }),
       set_setting: async (k, v) => { s[k] = v; return v; },
       get_status: async () => ({

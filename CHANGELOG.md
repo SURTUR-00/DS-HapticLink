@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.8 — first public release (beta)
+## 0.4.9 — first public release (beta)
 
 First public version of DS HapticLink: native DualSense HD haptics, adaptive triggers, light bar, speaker,
 headphone jack and microphone over Bluetooth on Windows, through a virtual wired DualSense.
@@ -15,7 +15,11 @@ sessions.
 - Tray app with status colors, English/Spanish interface, "My controllers" with per-controller settings, optional
   cable profile capture.
 
-**Fixes during testing (0.4.1 – 0.4.8)**
+**Fixes during testing (0.4.1 – 0.4.9)**
+- Fewer antivirus false positives: the helper no longer starts PowerShell (the usbip-win2 signature is checked
+  with Windows' own `WinVerifyTrust`), and the scheduled task now has an author and a description.
+- The scheduled task now **also runs on battery**: on a laptop without its charger the controller was never
+  restarted (Windows' default task settings say "don't start on battery").
 - **Uninstall from the app:** General → *Uninstall…* (or `DSHapticLink.exe --uninstall`), with progress and the
   option to keep or remove usbip-win2.
 - `dsh-helper uninstall` asks for administrator permission by itself, disconnects the virtual controller first,

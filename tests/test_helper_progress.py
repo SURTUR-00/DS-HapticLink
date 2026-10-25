@@ -55,6 +55,23 @@ class ProgressTest(unittest.TestCase):
                 self.assertEqual(dsh_helper.uninstall(drivers=False, quiet=True), 6)
         self.assertIn("errors: scheduled task", (self.dir / "setup.log").read_text(encoding="utf-8"))
 
+    def test_signature_check_without_powershell(self):
+        import sys
+        signed = Path(getattr(sys, "_base_executable", sys.executable))  # python.exe de python.org está firmado
+        self.assertTrue(dsh_helper.authenticode_ok(signed))
+        unsigned = self.dir / "unsigned.exe"
+        unsigned.write_bytes(signed.read_bytes()[:4096])  # copia truncada: firma inválida
+        self.assertFalse(dsh_helper.authenticode_ok(unsigned))
+
+    def test_task_definition_runs_on_battery_and_on_demand(self):
+        from bridge import devrestart
+        xml = devrestart.task_xml(r"C:\Program Files\DSHapticLink Helper\dsh-helper.exe", "restart", "PC\\user & co")
+        self.assertIn("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>", xml)
+        self.assertIn("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>", xml)
+        self.assertIn("<RunLevel>HighestAvailable</RunLevel>", xml)
+        self.assertNotIn("<Triggers>", xml)  # sin horario: solo a pedido
+        self.assertIn("PC\\user &amp; co", xml)  # escapado
+
     def _bundled(self, content):
         path = self.dir / dsh_helper.USBIP_INSTALLER_NAME
         path.write_bytes(content)
