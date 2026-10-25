@@ -90,6 +90,18 @@ others in [Issues](../../issues)!
 > software). If your controller doesn't connect or takes too long, close anything that might be using it and
 > try again.
 
+> **Windows Defender / antivirus:** Defender may flag `dsh-helper.exe` as **`Behavior:Win32/Execution.A!ml`**
+> the first time the controller is restarted, and quarantine the helper and its scheduled task. It's a false
+> positive of Defender's machine-learning behavior detection: an unsigned program that creates an elevated
+> scheduled task and restarts a device looks like malware persistence to it. If it happens:
+> 1. Open **Windows Security → Virus & threat protection → Protection history**, select the detection and choose
+>    **Actions → Allow on device** (or **Restore**).
+> 2. Open DS HapticLink: it notices the missing component and shows **Install components** again; click it to
+>    repair.
+>
+> You can review everything the helper does in [`helper/dsh_helper.py`](helper/dsh_helper.py) and
+> [`bridge/devrestart.py`](bridge/devrestart.py), check the release zip's SHA-256, or build it yourself.
+
 - **Zenless Zone Zero (and Genshin Impact):** set the DualSense audio device to *Quadraphonic* with all
   full-range speakers enabled (Sound control panel → DualSense Wireless Controller → Configure) before opening
   the game, and keep the game's controller speaker volume at maximum, or the haptics feel wrong.

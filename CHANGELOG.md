@@ -33,4 +33,6 @@ sessions.
   (from ~1 cut per second to none perceptible). A timing summary is logged every 30 s while haptics are active.
 - Quitting from the tray no longer hangs.
 
-**Known issues:** see [Tips and known issues](README.md#tips-and-known-issues).
+**Known issues:** see [Tips and known issues](README.md#tips-and-known-issues). Windows Defender may flag the
+helper as `Behavior:Win32/Execution.A!ml` (false positive): allow it in Protection history and click *Install
+components* again.
