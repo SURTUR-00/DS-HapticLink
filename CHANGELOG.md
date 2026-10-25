@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.9 — first public release (beta)
+## 0.4.9 — first public release
 
 First public version of DS HapticLink: native DualSense HD haptics, adaptive triggers, light bar, speaker,
 headphone jack and microphone over Bluetooth on Windows, through a virtual wired DualSense.
