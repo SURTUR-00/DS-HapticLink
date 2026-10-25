@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DS HapticLink</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" id="logo">DSH</div>
+      <div>
+        <div class="brand-name">DS HapticLink</div>
+        <div class="state" id="state-text">…</div>
+      </div>
+    </div>
+    <div class="battery" id="battery" hidden>
+      <span data-i18n="battery">Battery</span>
+      <div class="battery-bar"><div class="battery-fill" id="battery-fill"></div></div>
+      <span id="battery-text"></span>
+    </div>
+  </header>
+
+  <!-- Configuración inicial -->
+  <main id="view-setup" class="view" hidden>
+    <section class="card wide">
+      <h1 data-i18n="setup.title">Initial setup</h1>
+      <p class="muted" data-i18n="setup.intro"></p>
+      <ul class="components">
+        <li>
+          <div><strong data-i18n="setup.usbip"></strong><div class="muted small" data-i18n="setup.usbip.desc"></div></div>
+          <span class="chip" id="chip-usbip"></span>
+        </li>
+        <li>
+          <div><strong data-i18n="setup.task"></strong><div class="muted small" data-i18n="setup.task.desc"></div></div>
+          <span class="chip" id="chip-task"></span>
+        </li>
+      </ul>
+      <div class="progress" id="setup-progress" hidden><div class="progress-fill" id="setup-fill"></div></div>
+      <p class="small" id="setup-message"></p>
+      <div class="row">
+        <button class="primary" id="btn-install" data-i18n="setup.install">Install components</button>
+        <span class="muted small" data-i18n="setup.note"></span>
+      </div>
+      <p class="small"><a href="#" class="link-danger" id="link-uninstall-setup" data-i18n="un.link" hidden></a></p>
+    </section>
+  </main>
+
+  <!-- Desinstalar -->
+  <main id="view-uninstall" class="view" hidden>
+    <section class="card wide">
+      <div id="un-confirm">
+        <h1 data-i18n="un.title">Uninstall DS HapticLink</h1>
+        <p class="muted" data-i18n="un.intro"></p>
+        <ul class="bullets">
+          <li data-i18n="un.item.task"></li>
+          <li data-i18n="un.item.autostart"></li>
+        </ul>
+        <label class="toggle"><input type="checkbox" id="un-drivers" checked><span></span>
+          <div><div data-i18n="un.drivers"></div><div class="muted small" data-i18n="un.drivers.desc"></div></div></label>
+        <p class="muted small" data-i18n="un.note"></p>
+      </div>
+      <div id="un-done" hidden>
+        <h1 data-i18n="un.done.title"></h1>
+        <p id="un-done-text"></p>
+        <p class="mono small" id="un-folder"></p>
+      </div>
+      <div class="progress" id="un-progress" hidden><div class="progress-fill danger" id="un-fill"></div></div>
+      <p class="small" id="un-message"></p>
+      <div class="row">
+        <button class="primary danger" id="btn-un-start" data-i18n="un.start">Uninstall</button>
+        <button class="ghost" id="btn-un-cancel" data-i18n="un.cancel">Cancel</button>
+        <button id="btn-un-folder" data-i18n="un.open_folder" hidden>Open folder</button>
+        <button class="primary" id="btn-un-quit" data-i18n="un.quit" hidden>Quit</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Panel -->
+  <main id="view-main" class="view" hidden>
+    <section class="card wide hero">
+      <div class="hero-text">
+        <h1 id="hero-title"></h1>
+        <p class="muted" id="hero-help"></p>
+        <div class="badges" id="badges"></div>
+      </div>
+      <div class="hero-actions">
+        <button id="btn-test" data-i18n="hero.test">Test vibration</button>
+        <button id="btn-bt" data-i18n="hero.open_bt" hidden>Open Bluetooth</button>
+        <button class="ghost" id="btn-pause"></button>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2 data-i18n="card.haptics"></h2>
+        <p class="muted small" data-i18n="card.haptics.desc"></p>
+        <div class="slider-row">
+          <input type="range" id="haptics-gain" min="50" max="200" step="5">
+          <span class="value" id="haptics-gain-value"></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="card.light"></h2>
+        <p class="muted small" data-i18n="card.light.desc"></p>
+        <div class="swatches" id="swatches"></div>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="card.audio"></h2>
+        <label class="toggle"><input type="checkbox" id="audio-enabled"><span></span>
+          <div><div data-i18n="audio.enabled"></div><div class="muted small" data-i18n="audio.enabled.desc"></div></div></label>
+        <label class="toggle"><input type="checkbox" id="mic-enabled"><span></span><div data-i18n="audio.mic"></div></label>
+        <div class="slider-row">
+          <span class="small" data-i18n="audio.boost"></span>
+          <input type="range" id="speaker-boost" min="0" max="7" step="1">
+          <span class="value" id="speaker-boost-value"></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="card.general"></h2>
+        <div class="field">
+          <span data-i18n="general.language"></span>
+          <select id="language"><option value="es">Español</option><option value="en">English</option></select>
+        </div>
+        <label class="toggle"><input type="checkbox" id="autostart"><span></span><div data-i18n="general.autostart"></div></label>
+        <label class="toggle"><input type="checkbox" id="start-minimized"><span></span><div data-i18n="general.minimized"></div></label>
+        <label class="toggle"><input type="checkbox" id="notifications"><span></span><div data-i18n="general.notifications"></div></label>
+        <div class="field">
+          <span class="muted small" data-i18n="general.uninstall.desc"></span>
+          <button class="ghost danger" id="btn-uninstall" data-i18n="general.uninstall">Uninstall…</button>
+        </div>
+      </section>
+
+      <section class="card wide">
+        <h2 data-i18n="card.controllers"></h2>
+        <p class="muted small" data-i18n="controllers.desc"></p>
+        <div class="controllers" id="controllers"></div>
+        <p class="muted small" id="controllers-empty" data-i18n="controllers.empty" hidden></p>
+      </section>
+
+      <section class="card wide">
+        <h2 data-i18n="card.diag"></h2>
+        <p class="muted small mono" id="stats"></p>
+        <div class="row">
+          <button id="btn-diag" data-i18n="diag.copy">Copy diagnostics</button>
+          <button class="ghost" id="btn-log"></button>
+          <span class="small ok-text" id="diag-feedback"></span>
+        </div>
+        <pre class="log" id="log" hidden></pre>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span class="muted small"><span id="version"></span> · <span data-i18n="footer.close_hint"></span></span>
+    <button class="ghost danger" id="btn-quit" data-i18n="footer.quit">Quit DS HapticLink</button>
+  </footer>
+
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+  <script>
+    // Vista previa en un navegador (desarrollo): index.html?mock carga una API simulada.
+    if (new URLSearchParams(location.search).has("mock")) {
+      const s = document.createElement("script"); s.src = "dev_mock.js"; document.body.appendChild(s);
+    }
+  </script>
+</body>
+</html>

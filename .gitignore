@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build output (Nuitka) — releases go to GitHub Releases, not the repository
+build/
+dist/
+build_log.txt
+*.build/
+*.dist/
+*.onefile-build/
+
+# Local data written by the app (may contain your controller's MAC address)
+config.json
+controllers.json
+logs/
+*.log
+
+# Raw captures from tools/usb_dump.py (your controller's descriptors and MAC addresses)
+results/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

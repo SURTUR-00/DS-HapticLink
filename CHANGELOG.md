@@ -1,0 +1,36 @@
+# Changelog
+
+## 0.4.8 — first public release (beta)
+
+First public version of DS HapticLink: native DualSense HD haptics, adaptive triggers, light bar, speaker,
+headphone jack and microphone over Bluetooth on Windows, through a virtual wired DualSense.
+
+Tested over Bluetooth with **God of War Ragnarök**, **Stellar Blade** and **Zenless Zone Zero**, including 30+ minute
+sessions.
+
+**Highlights**
+- One-click setup with a single administrator prompt. The usbip-win2 driver is now **included in the zip** (no
+  download needed; SHA-256 and digital signature verified before installing).
+- No HidHide: the real controller is taken exclusively by briefly restarting it.
+- Tray app with status colors, English/Spanish interface, "My controllers" with per-controller settings, optional
+  cable profile capture.
+
+**Fixes during testing (0.4.1 – 0.4.8)**
+- **Uninstall from the app:** General → *Uninstall…* (or `DSHapticLink.exe --uninstall`), with progress and the
+  option to keep or remove usbip-win2.
+- `dsh-helper uninstall` asks for administrator permission by itself, disconnects the virtual controller first,
+  waits for the usbip-win2 uninstaller, logs every step and shows the result (before, it could leave usbip-win2
+  and the scheduled task installed without telling you).
+- Setup no longer gets stuck on "Downloading usbip-win2" (status file race), and errors are shown in the window.
+- The helper has its own folder (`C:\Program Files\DSHapticLink Helper`), so it can never touch the app folder.
+- If the helper is deleted, the app notices and offers **Install components** again to repair it.
+- Works with **Steam open**: the bridge keeps trying for the whole restart instead of 5 s, with increasing pauses
+  and a message in the window.
+- The controller no longer **turns off when a game starts** (God of War sends a feature report `0x08` that powers
+  the controller off over Bluetooth; it's now blocked).
+- The light bar comes back to your color when a game exits and leaves the lights off.
+- **Haptic micro-cuts fixed:** 1 ms Windows timer, higher priority for the audio threads, and gap concealment
+  (from ~1 cut per second to none perceptible). A timing summary is logged every 30 s while haptics are active.
+- Quitting from the tray no longer hangs.
+
+**Known issues:** see [Tips and known issues](README.md#tips-and-known-issues).

@@ -1,0 +1,11 @@
+# Python 3.14 (64-bit) on Windows. Exact versions used for the 0.4.5 release.
+hidapi==0.15.0
+PyOgg==0.6.14a1
+pywebview==6.2.1
+pythonnet==3.2.1
+clr_loader==0.3.1
+pystray==0.19.5
+pillow==12.3.0
+
+# Build only
+Nuitka==4.3
