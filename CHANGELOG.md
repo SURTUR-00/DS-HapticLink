@@ -18,6 +18,8 @@ sessions.
 **Fixes during testing (0.4.1 – 0.4.9)**
 - Fewer antivirus false positives: the helper no longer starts PowerShell (the usbip-win2 signature is checked
   with Windows' own `WinVerifyTrust`), and the scheduled task now has an author and a description.
+- usbip-win2 is only considered installed if all its files are there: after uninstalling it without
+  restarting, a leftover `usbip.exe` made the next setup skip the driver ("libusbip.dll was not found").
 - The scheduled task now **also runs on battery**: on a laptop without its charger the controller was never
   restarted (Windows' default task settings say "don't start on battery").
 - **Uninstall from the app:** General → *Uninstall…* (or `DSHapticLink.exe --uninstall`), with progress and the

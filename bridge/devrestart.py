@@ -21,6 +21,15 @@ from ctypes import wintypes
 from pathlib import Path
 
 TASK_NAME = r"DSHapticLink\RestartDualSense"
+USBIP_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "USBip"
+# Archivos que deja una instalación completa de usbip-win2. Solo usbip.exe no basta: pasó en una prueba real que,
+# tras desinstalarlo sin reiniciar, quedó usbip.exe suelto (Windows lo borra al reiniciar) sin libusbip.dll ni el
+# driver; la instalación siguiente lo dio por instalado y se saltó el driver ("no se encontró libusbip.dll").
+USBIP_REQUIRED = ("usbip.exe", "libusbip.dll", "unins000.exe")
+
+
+def usbip_installed():
+    return all((USBIP_DIR / name).exists() for name in USBIP_REQUIRED)
 # En ProgramData y no en AppData: Windows redirige en silencio las escrituras en AppData de las apps
 # empaquetadas (MSIX), y entonces la tarea (que corre fuera de esa app) no vería la petición.
 REQUEST_FILE = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "DSHapticLink" / "restart_request.txt"

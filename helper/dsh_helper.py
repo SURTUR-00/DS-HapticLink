@@ -216,8 +216,8 @@ def install(lang):
 
 def _install(progress):
     progress("start", 1)
-    # 1. usbip-win2 (si falta)
-    if USBIP_EXE.exists():
+    # 1. usbip-win2 (si falta o quedó incompleto)
+    if devrestart.usbip_installed():
         progress("usbip_ok", 50)
     else:
         try:
@@ -244,7 +244,7 @@ def _install(progress):
         finally:
             shutil.rmtree(SETUP_DIR, ignore_errors=True)
         log(f"usbip-win2 installer exited with code {code}")
-        if code != 0 or not USBIP_EXE.exists():
+        if code != 0 or not devrestart.usbip_installed():
             progress("install_fail", 0, ok=False, code=code)
             return 4
     # 2. Copia protegida del helper + tarea programada
@@ -316,9 +316,11 @@ def uninstall(drivers, lang="en", quiet=False):
         log(f"usbip-win2 uninstaller started: {p.returncode} (log: {inno_log})")
         # El desinstalador de Inno Setup se copia a TEMP y sigue por su cuenta: esperar a que termine de verdad.
         deadline = time.monotonic() + 180
-        while USBIP_EXE.exists() and time.monotonic() < deadline:
+        # usbip.exe puede quedar hasta reiniciar (si estaba en uso): lo que indica que terminó es que se va su
+        # desinstalador.
+        while USBIP_UNINSTALLER.exists() and time.monotonic() < deadline:
             time.sleep(0.5)
-        if USBIP_EXE.exists():
+        if USBIP_UNINSTALLER.exists():
             errors.append("usbip-win2")
     log(f"uninstall finished: {'OK' if not errors else 'errors: ' + ', '.join(errors)}")
     if errors:

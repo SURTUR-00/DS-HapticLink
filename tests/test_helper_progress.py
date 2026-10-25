@@ -47,6 +47,7 @@ class ProgressTest(unittest.TestCase):
         with mock.patch.object(dsh_helper, "PROTECTED_DIR", protected), \
                 mock.patch.object(dsh_helper, "SETUP_DIR", self.dir / "setup"), \
                 mock.patch.object(dsh_helper, "USBIP_EXE", self.dir / "no-usbip.exe"), \
+                mock.patch.object(dsh_helper, "USBIP_UNINSTALLER", self.dir / "no-unins000.exe"), \
                 mock.patch.object(devrestart, "uninstall_task", return_value=(0, "ok")):
             with mock.patch.object(devrestart, "task_installed", return_value=False):
                 self.assertEqual(dsh_helper.uninstall(drivers=True, quiet=True), 0)
@@ -71,6 +72,17 @@ class ProgressTest(unittest.TestCase):
         self.assertIn("<RunLevel>HighestAvailable</RunLevel>", xml)
         self.assertNotIn("<Triggers>", xml)  # sin horario: solo a pedido
         self.assertIn("PC\\user &amp; co", xml)  # escapado
+
+    def test_leftover_usbip_exe_is_not_an_installation(self):
+        from bridge import devrestart
+        folder = self.dir / "USBip"
+        folder.mkdir()
+        (folder / "usbip.exe").write_bytes(b"")  # lo que queda al desinstalar sin reiniciar
+        with mock.patch.object(devrestart, "USBIP_DIR", folder):
+            self.assertFalse(devrestart.usbip_installed())
+            for name in devrestart.USBIP_REQUIRED:
+                (folder / name).write_bytes(b"")
+            self.assertTrue(devrestart.usbip_installed())
 
     def _bundled(self, content):
         path = self.dir / dsh_helper.USBIP_INSTALLER_NAME

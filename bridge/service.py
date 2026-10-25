@@ -9,7 +9,7 @@ import threading
 import time
 
 from . import audio, devrestart, rt
-from .attach import USBIP_EXE, AttachManager
+from .attach import AttachManager
 from .btlink import BtLink
 from .controllers import ControllerRegistry
 from .profiles import BUILTIN_PID, builtin_profile, capture_profile
@@ -35,7 +35,7 @@ STATE_PROBLEM = "problema"
 def prerequisites():
     """Qué falta instalar: el driver usbip-win2 y la tarea que libera el control sin UAC."""
     return {
-        "usbip": USBIP_EXE.exists(),
+        "usbip": devrestart.usbip_installed(),
         "task": devrestart.task_ready(),
     }
 
@@ -251,7 +251,7 @@ class BridgeService:
             return STATE_PROBLEM if self.error else STATE_STOPPED
         if self.device is None or self.attach is None:
             return STATE_STARTING
-        if not USBIP_EXE.exists():
+        if not devrestart.usbip_installed():
             return STATE_NEEDS_SETUP
         if self.attach.cable_mode:
             return STATE_CABLE
