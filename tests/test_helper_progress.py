@@ -84,6 +84,22 @@ class ProgressTest(unittest.TestCase):
                 (folder / name).write_bytes(b"")
             self.assertTrue(devrestart.usbip_installed())
 
+    def test_removes_usbip_shortcuts(self):
+        start_menu = self.dir / "Start Menu" / "USBip"
+        start_menu.mkdir(parents=True)
+        (start_menu / "USBip.lnk").write_bytes(b"")
+        (start_menu / "Uninstall USBip.lnk").write_bytes(b"")
+        desktop = self.dir / "Desktop"
+        desktop.mkdir()
+        (desktop / "USBip.lnk").write_bytes(b"")
+        (desktop / "Other.lnk").write_bytes(b"")
+        with mock.patch.object(dsh_helper, "USBIP_START_MENU", start_menu), \
+                mock.patch.object(dsh_helper, "PUBLIC_DESKTOP", desktop):
+            dsh_helper.remove_usbip_shortcuts()
+            dsh_helper.remove_usbip_shortcuts()  # sin nada que quitar: no falla
+        self.assertFalse(start_menu.exists())
+        self.assertEqual([p.name for p in desktop.iterdir()], ["Other.lnk"])
+
     def _bundled(self, content):
         path = self.dir / dsh_helper.USBIP_INSTALLER_NAME
         path.write_bytes(content)

@@ -43,6 +43,11 @@ PROTECTED_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "DSH
 SETUP_DIR = PROTECTED_DIR.with_name("DSHapticLink Helper Setup")
 STATUS_FILE = devrestart.REQUEST_FILE.with_name("setup_status.json")
 LOG_FILE = devrestart.REQUEST_FILE.with_name("setup.log")
+# Accesos directos que crea el instalador de usbip-win2 (su ventana "USBip" y "Uninstall USBip"). DS HapticLink no
+# los necesita, y desinstalar usbip-win2 por ahí deja la app sin driver: se quitan (además de pasar /NOICONS).
+USBIP_START_MENU = (Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+                    / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "USBip")
+PUBLIC_DESKTOP = Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "Desktop"
 CREATE_NO_WINDOW = 0x08000000
 
 TEXT = {
@@ -202,6 +207,22 @@ def usbip_installer_bytes(progress):
     return data if sha256_ok(data) else None
 
 
+def remove_usbip_shortcuts():
+    """Quita los accesos directos de usbip-win2 (menú Inicio y, si hubiera, escritorio público). Nunca falla."""
+    removed = []
+    if USBIP_START_MENU.is_dir():
+        shutil.rmtree(USBIP_START_MENU, ignore_errors=True)
+        removed.append(str(USBIP_START_MENU))
+    for link in PUBLIC_DESKTOP.glob("USBip*.lnk") if PUBLIC_DESKTOP.is_dir() else []:
+        try:
+            link.unlink()
+            removed.append(str(link))
+        except OSError:
+            pass
+    if removed:
+        log("removed usbip-win2 shortcuts: " + ", ".join(removed))
+
+
 def install(lang):
     progress = Progress(lang)
     log(f"install started (helper at {Path(sys.argv[0]).resolve().parent})")
@@ -220,6 +241,7 @@ def _install(progress):
     # 1. usbip-win2 (si falta o quedó incompleto)
     if devrestart.usbip_installed():
         progress("usbip_ok", 50)
+        remove_usbip_shortcuts()  # también limpia instalaciones anteriores (antes de /NOICONS)
     else:
         try:
             data = usbip_installer_bytes(progress)
@@ -241,10 +263,12 @@ def _install(progress):
                 progress("bad_sig", 0, ok=False)
                 return 3
             progress("install_usbip", 60)
-            code = subprocess.run([str(installer), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"]).returncode
+            code = subprocess.run([str(installer), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
+                                   "/NOICONS"]).returncode
         finally:
             shutil.rmtree(SETUP_DIR, ignore_errors=True)
         log(f"usbip-win2 installer exited with code {code}")
+        remove_usbip_shortcuts()
         if code != 0 or not devrestart.usbip_installed():
             progress("install_fail", 0, ok=False, code=code)
             return 4

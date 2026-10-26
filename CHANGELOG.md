@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- usbip-win2 is installed without its Start menu shortcuts ("USBip" and "Uninstall USBip"), and *Install
+  components* removes them from existing installations: uninstalling usbip-win2 from there left DS HapticLink
+  without its driver. Use *General → Uninstall…* instead.
+
 ## 0.4.9 — first public release
 
 First public version of DS HapticLink: native DualSense HD haptics, adaptive triggers, light bar, speaker,
