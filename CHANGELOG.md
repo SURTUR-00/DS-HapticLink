@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- No more console window flashing for a moment when DS HapticLink starts (`usbip.exe` was run without hiding its
+  console).
+
 - usbip-win2 is installed without its Start menu shortcuts ("USBip" and "Uninstall USBip"), and *Install
   components* removes them from existing installations: uninstalling usbip-win2 from there left DS HapticLink
   without its driver. Use *General → Uninstall…* instead.

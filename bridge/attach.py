@@ -21,11 +21,15 @@ USBIP_EXE = Path(r"C:\Program Files\USBip\usbip.exe")
 BUSID = "1-1"
 
 MODE_NORMAL, MODE_CHARGING, MODE_CABLE = "normal", "carga", "cable"
+# La app compilada no tiene consola: sin esto, Windows abre una ventana de consola por un instante cada vez que
+# se ejecuta usbip.exe (se veía al abrir la app, antes de la interfaz).
+CREATE_NO_WINDOW = 0x08000000
 
 
 def run_usbip(*args):
-    """Ejecuta usbip.exe y devuelve (código, salida)."""
-    p = subprocess.run([str(USBIP_EXE), *args], capture_output=True, encoding="oem", errors="replace", timeout=30)
+    """Ejecuta usbip.exe (sin ventana) y devuelve (código, salida)."""
+    p = subprocess.run([str(USBIP_EXE), *args], capture_output=True, encoding="oem", errors="replace", timeout=30,
+                       creationflags=CREATE_NO_WINDOW)
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
