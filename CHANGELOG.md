@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.10
 
 - No more console window flashing for a moment when DS HapticLink starts (`usbip.exe` was run without hiding its
   console).
