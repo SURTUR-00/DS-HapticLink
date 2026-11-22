@@ -111,6 +111,15 @@ others in [Issues](../../issues)!
 - **Zenless Zone Zero (and Genshin Impact):** set the DualSense audio device to *Quadraphonic* with all
   full-range speakers enabled (Sound control panel → DualSense Wireless Controller → Configure) before opening
   the game, and keep the game's controller speaker volume at maximum, or the haptics feel wrong.
+- **Bluetooth headphones:** the game sound goes to your headphones and the haptics keep working on the controller.
+  If nothing is plugged into the controller's jack, turn off **Speaker, headphones and microphone over Bluetooth**
+  (Controller audio card, applies after restarting DS HapticLink). The haptics stay the same and the controller
+  link carries much less data, which leaves more Bluetooth room for the headphones; both share the same adapter.
+  Using 5 GHz Wi-Fi instead of 2.4 GHz also helps.
+- **Power saving:** since 0.4.11, audio and haptics are steady on the *Power saver* plan too. DS HapticLink shows a
+  card when Windows is saving power. If you use power saving on purpose, click **Don't warn me again**. If you
+  ever hear cuts, try the *Balanced* plan and send **Copy diagnostics**: the log shows the incoming audio rate and
+  the buffer level every 30 seconds.
 - **One controller at a time.**
 - **After quitting DS HapticLink**, Game Bar and apps using GameInput may not see the controller until you turn it
   off and on again. Games that open the controller themselves see it right away.
