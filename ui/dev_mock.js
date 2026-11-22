@@ -5,7 +5,7 @@
   const setup = params.has("setup");
   let s = {
     language: params.get("lang") || "es", lightbar_color: [0, 0, 128], haptics_gain: 1.0, speaker_boost: 0,
-    audio_enabled: true, mic_enabled: true, start_minimized: true, notifications: true, autostart: false,
+    audio_enabled: true, mic_enabled: true, start_minimized: true, notifications: true, power_warning: true, autostart: false,
   };
   const connected = ["listo", "en_juego"].includes(state);
   const un = { view: params.has("uninstall") || params.has("undone"), running: false, message: "", percent: 0,
@@ -25,6 +25,8 @@
           needs_cable: params.has("edge"), connected, exclusive: connected, blocked: false, battery: connected ? 75 : null,
           battery_state: "descargando", headphones: false, mic_muted: false },
         uninstall: un,
+        power: params.has("saver") ? { name: "Economizador", guid: "a1841308-3541-4fab-bc81-f71556f20b4a",
+          power_saver: true, reason: params.get("saver") || "plan" } : { name: "Equilibrado", power_saver: false, reason: null },
         virtual: { attached: true, mode: "normal" }, game_active: state === "en_juego",
         stats: { bt_in: 12345, out_reports: state === "en_juego" ? 4321 : 0, haptic_reports: 980, underruns: 2,
           reserve_ms: 21.3, connections: 1 },
@@ -43,7 +45,7 @@
       run_uninstall: async (d) => { Object.assign(un, { running: true, percent: 40, drivers: d, message: "Removing usbip-win2…" });
         setTimeout(() => Object.assign(un, { running: false, ok: true, percent: 100 }), 2500); return true; },
       open_app_folder: async () => {}, test_rumble: async () => true, toggle_pause: async () => false,
-      open_bluetooth_settings: async () => {}, copy_diagnostics: async () => true, quit: async () => {},
+      open_bluetooth_settings: async () => {}, open_power_settings: async () => {}, copy_diagnostics: async () => true, quit: async () => {},
     },
   };
   window.addEventListener("load", () => window.dispatchEvent(new Event("pywebviewready")));

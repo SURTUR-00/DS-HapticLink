@@ -163,6 +163,25 @@ class HapticsTests(unittest.TestCase):
         self.assertEqual(hb.stats["underruns"], 1)
         self.assertGreater(hb.prefill, before)
 
+    def test_reserve_rises_fast_and_falls_slowly_after_a_hiccup(self):
+        from bridge import haptics as H
+        hb = HapticBridge(ds=None, prefill_reports=1)
+        for _ in range(10):  # un tirón: varios cortes seguidos suben la reserva al tope
+            self._gap(hb, 1)
+            hb.buf = bytearray(REPORT_BYTES)
+            hb._next_chunk()
+        self.assertEqual(hb.prefill, hb.max_prefill)
+        t0 = hb._last_counted_underrun
+        hb.last_underrun = t0
+        # 5 minutos estables: antes bajaba hasta el mínimo; ahora el piso solo bajó un par de pasos
+        for s in range(0, 300, 5):
+            hb._maybe_shrink(now=t0 + s + 1)
+        self.assertGreaterEqual(hb.prefill, hb.max_prefill - 3 * H.PREFILL_STEP)
+        # Sin tirones durante mucho rato, la reserva vuelve al mínimo (menos latencia)
+        for s in range(300, 3600, 5):
+            hb._maybe_shrink(now=t0 + s + 1)
+        self.assertEqual(hb.prefill, hb.min_prefill)
+
     def test_long_pause_does_not_raise_reserve(self):
         hb = HapticBridge(ds=None, prefill_reports=1)
         before = hb.prefill
@@ -239,6 +258,12 @@ class HapticsTests(unittest.TestCase):
             self.assertLess(asyncio.run(measure()), 8)  # sin él, ~16 ms por pausa
         finally:
             rt.disable_high_resolution_timer()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows")
+    def test_power_throttling_can_be_disabled(self):
+        # Sin esto, Windows 11 ignora timeBeginPeriod cuando la ventana está oculta (pausas de ~16 ms)
+        from bridge import rt
+        self.assertTrue(rt.disable_power_throttling())
 
 
 class BtLinkTests(unittest.TestCase):
@@ -736,11 +761,46 @@ class AudioTests(unittest.TestCase):
         self.assertGreater(right_peak(mono=True), 3000)  # bocina: la mezcla llega al canal que suena
         self.assertLess(right_peak(mono=False), 800)  # audífonos: estéreo intacto
 
+    def test_resampler_is_exact_and_independent_of_block_size(self):
+        tone = [int(20000 * math.sin(n / 9)) for n in range(5120)]
+        whole = self.audio.StereoResampler().process(tone, tone)
+        self.assertEqual(len(whole), 2 * 4800)  # 512 → 480 exacto
+        r, pieces, i = self.audio.StereoResampler(), self.audio.array.array("h"), 0
+        for size in [384, 1, 0, 7, 512, 96] * 40:
+            pieces += r.process(tone[i:i + size], tone[i:i + size])
+            i += size
+            if i >= len(tone):
+                break
+        self.assertEqual(list(pieces[:len(whole)]), list(whole[:len(pieces)]))
+        # Cada salida interpola entre las dos muestras vecinas de la entrada (posición k × 16/15)
+        for k in (0, 1, 14, 15, 16, 1000, 4799):
+            p = k * 16 / 15
+            j = int(p)
+            expected = tone[j] + (tone[min(j + 1, len(tone) - 1)] - tone[j]) * (p - j)
+            self.assertLessEqual(abs(whole[2 * k] - expected), 1)
+
+    def test_resampler_mono_duplicates_channel(self):
+        out = self.audio.StereoResampler().process([1000, 2000, 3000] * 200)
+        self.assertEqual(list(out[0::2]), list(out[1::2]))
+
     def test_speaker_buffer_is_bounded(self):
         sp = self.audio.SpeakerPath()
         for _ in range(10):  # 213 ms de golpe: se conservan solo las tramas más recientes
             sp.feed([3000] * 1024, [-3000] * 1024)
-        self.assertLessEqual(len(sp.frames), 6)
+        self.assertLessEqual(len(sp.frames), 12)
+        self.assertGreater(sp.dropped, 0)  # y quedan contadas como descartadas
+
+    def test_speaker_gaps_are_counted_only_after_audio_started(self):
+        sp = self.audio.SpeakerPath()
+        self.assertIsNone(sp.pop_pair())
+        self.assertEqual(sp.gaps, 0)  # antes del primer audio no es un corte
+        sp.feed([3000] * 1024, [-3000] * 1024)  # 2 tramas
+        self.assertIsNotNone(sp.pop_pair())
+        self.assertIsNone(sp.pop_pair())  # se acabó el audio: corte
+        self.assertEqual(sp.gaps, 1)
+        sp.reset()  # el juego cerró el stream
+        self.assertIsNone(sp.pop_pair())
+        self.assertEqual(sp.gaps, 1)
 
     def test_mic_roundtrip(self):
         enc = self.audio.OpusEncoder(1, frame_bytes=self.audio.MIC_OPUS_BYTES)  # como el control
@@ -769,9 +829,58 @@ class ReconnectTests(UsbIpHarness):
         self.device._check_idle(time.monotonic() + 5)  # 5 s sin datos: el control se apagó
         await asyncio.sleep(0)
         self.assertTrue(self.device.bt_idle)
-        self.assertEqual(self.device.latest_input, NEUTRAL_INPUT)  # el juego ya no ve ✕ presionado
+        self.assertEqual(self.device.latest_input[:53], NEUTRAL_INPUT[:53])  # el juego ya no ve ✕ presionado
         self.device._handle_report(self.ext())
         self.assertFalse(self.device.bt_idle)
+
+    def signed(self, battery=0x05, buttons=0x08):
+        """Reporte 0x31 como lo entrega Windows: 78 bytes con CRC32 (semilla 0xA1) al final."""
+        r = bytearray(self.ext(buttons))
+        r[54] = battery
+        r[-4:] = bt_crc(bytes(r[:-4]), header=0xA1)
+        return list(r)
+
+    async def test_corrupt_report_is_discarded_once_crc_is_known(self):
+        self.device._handle_report(self.signed(battery=0x05))  # 55 %, descargando
+        await asyncio.sleep(0)
+        self.assertEqual(self.device.battery, (55, "descargando"))
+        bad = self.signed(battery=0x00, buttons=0x28)
+        bad[-1] ^= 0xFF  # CRC roto: lectura falsa de 5 % y ✕ "presionado"
+        self.device._handle_report(bad)
+        await asyncio.sleep(0)
+        self.assertEqual(self.device.battery, (55, "descargando"))
+        self.assertEqual(self.device.latest_input[8], 0x08)  # el juego no vio el reporte corrupto
+        self.assertEqual(self.device.counters["bt_crc_mal"], 1)
+
+    async def test_neutral_report_keeps_last_battery_when_controller_goes_silent(self):
+        self.assertEqual(self.device.latest_input[53], 0x2A)  # antes del control: "cargado"
+        self.device._handle_report(self.signed(battery=0x04))  # 45 %, descargando
+        await asyncio.sleep(0)
+        self.device._check_idle(time.monotonic() + 5)  # el control se apagó
+        await asyncio.sleep(0)
+        self.assertEqual(self.device.latest_input[53], 0x04)
+        self.assertEqual(self.device.latest_input[8], 0x08)  # sin botones
+
+    async def test_reports_without_crc_still_work(self):
+        # Si nunca llegó un CRC válido (Windows sin CRC, o cálculo distinto) no se descarta nada.
+        self.device._handle_report(self.ext(buttons=0x28))
+        await asyncio.sleep(0)
+        self.assertEqual(self.device.latest_input[8], 0x28)
+
+    async def test_battery_reading_must_settle(self):
+        d = self.device
+        d._check_battery(0x05, now=100.0)
+        self.assertEqual(d.battery, (55, "descargando"))  # la primera lectura se muestra en el acto
+        d._check_battery(0x01, now=101.0)  # caída momentánea a 15 % (vibración fuerte)
+        d._check_battery(0x05, now=101.5)
+        d._check_battery(0x01, now=102.0)
+        self.assertEqual(d.battery, (55, "descargando"))
+        d._check_battery(0x01, now=106.9)
+        self.assertEqual(d.battery, (55, "descargando"))
+        d._check_battery(0x01, now=107.1)  # se mantuvo 5 s: ahora sí
+        self.assertEqual(d.battery, (15, "descargando"))
+        d._check_battery(0x15, now=107.2)  # ya no se pasa a otra lectura de inmediato
+        self.assertEqual(d.battery, (15, "descargando"))
 
     async def test_basic_mode_after_extended_means_reconnected(self):
         self.device._handle_report(self.ext())
@@ -792,6 +901,41 @@ class VirtualAudioTests(UsbIpHarness):
 
     async def set_interface(self, itf, alt):
         await self.submit(0, 0, struct.pack("<BBHHH", 0x01, 0x0B, alt, itf, 0))
+
+    async def test_iso_clock_keeps_real_time_when_a_urb_arrives_late(self):
+        d = self.device
+        late = time.perf_counter() - 0.030  # el URB anterior terminó hace 30 ms y Windows recién manda el siguiente
+        d.iso_clock[1] = late
+        t0 = time.perf_counter()
+        await d._pace_iso(1, 8)
+        self.assertAlmostEqual(d.iso_clock[1], late + 0.008, places=6)  # no se perdieron los 30 ms
+        self.assertLess(time.perf_counter() - t0, 0.005)  # ya iba atrasado: se completa sin esperar
+
+    async def test_iso_clock_restarts_after_a_long_pause(self):
+        d = self.device
+        d.iso_clock[1] = time.perf_counter() - 1.0  # el juego dejó de mandar audio un segundo
+        before = time.perf_counter()
+        await d._pace_iso(1, 2)
+        self.assertGreaterEqual(d.iso_clock[1], before + 0.002)  # reloj reiniciado desde "ahora": sin ráfaga
+
+    async def test_audio_rate_matches_real_time_with_bursty_urbs(self):
+        # Windows en Economizador manda los URB a ráfagas (a veces tarde): el ritmo total debe seguir siendo 1:1
+        from bridge import rt
+        rt.enable_high_resolution_timer()  # como en la app (sin él cada pausa dura ~16 ms)
+        try:
+            d = self.device
+            d.iso_clock.pop(1, None)
+            t0 = time.perf_counter()
+            packets = 0
+            for i in range(30):
+                if i % 5 == 4:
+                    await asyncio.sleep(0.012)  # este URB llega 12 ms tarde
+                await d._pace_iso(1, 4)
+                packets += 4
+            # 120 ms de audio = 120 ms de bus: los retrasos no se perdieron (antes sumaban ~70 ms de menos)
+            self.assertAlmostEqual(d.iso_clock[1] - t0, packets * 0.001, delta=0.005)
+        finally:
+            rt.disable_high_resolution_timer()
 
     async def test_mic_interface_enables_controller_mic(self):
         await self.set_interface(2, 1)

@@ -19,6 +19,8 @@ TEXTS = {
         "connected": "DualSense conectado",
         "disconnected": "DualSense desconectado",
         "battery_low": "Batería baja: {pct}%",
+        "power_saver": "Windows está ahorrando energía. Si el audio o la vibración del DualSense se entrecortan, "
+                       "prueba el plan de energía Equilibrado.",
         "already_running": "DS HapticLink ya está abierto",
         "repair": "Falta un componente de DS HapticLink. Abre la app y presiona \"Instalar componentes\" para repararlo.",
     },
@@ -40,6 +42,8 @@ TEXTS = {
         "connected": "DualSense connected",
         "disconnected": "DualSense disconnected",
         "battery_low": "Low battery: {pct}%",
+        "power_saver": "Windows is saving power. If the DualSense audio or haptics stutter, "
+                       "try the Balanced power plan.",
         "already_running": "DS HapticLink is already open",
         "repair": "A DS HapticLink component is missing. Open the app and click \"Install components\" to repair it.",
     },

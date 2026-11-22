@@ -28,12 +28,21 @@ FRAME_BYTES = 2  # un frame estéreo int8 (L, R)
 
 PREFILL_STEP = 32  # bytes (16 frames ≈ 5.3 ms) que sube o baja la reserva en cada ajuste
 STABLE_SECONDS = 20.0  # sin cortes durante este tiempo → bajar la reserva un paso
+FLOOR_RELEASE_SECONDS = 120.0  # sin cortes durante este tiempo → bajar un paso el piso aprendido de los tirones
 IDLE_STOP_SECONDS = 0.25  # sin audio nuevo durante este tiempo → el juego dejó de mandar; parar
 MAX_JITTER_GAP = 2  # huecos de hasta 2 reportes (≈ 43 ms) seguidos de más audio cuentan como corte
 # Ocultamiento de huecos: en vez de silencio, se repite la última vibración enviada desvaneciéndola a cero en
 # este número de frames (≈ 43 ms). Un hueco corto en una vibración continua deja de sentirse como un "bache".
 CONCEAL_FRAMES = 128
 TIMING_REPORT_SECONDS = 30.0  # cada cuánto se registra el resumen de tiempos mientras hay háptica
+
+
+def _dot_python(a, b):
+    return sum(map(operator.mul, a, b))
+
+
+# Producto punto del filtro: math.sumprod (Python 3.12+) lo hace en C, ~2-3 veces más rápido.
+_dot = getattr(math, "sumprod", _dot_python)
 
 
 class Decimator:
@@ -66,7 +75,7 @@ class Decimator:
         i = self.next_index
         taps = self.taps
         while i < len(buf):
-            out.append(sum(map(operator.mul, taps, buf[i - n_taps + 1:i + 1])))
+            out.append(_dot(taps, buf[i - n_taps + 1:i + 1]))
             i += self.factor
         keep = buf[-(n_taps - 1):]
         self.next_index = i - (len(buf) - len(keep))
@@ -99,6 +108,8 @@ class HapticBridge:
         self.streaming = False
         self.last_feed = 0.0
         self.last_underrun = time.monotonic()
+        self.floor = self.min_prefill  # piso de la reserva aprendido de los tirones (ver _maybe_shrink)
+        self._last_counted_underrun = self._floor_lowered = 0.0
         self._gap_reports = 0  # reportes seguidos rellenados con silencio
         self._gap_bump = 0  # subida provisional de la reserva al empezar el hueco
         self.stats = {"reportes": 0, "underruns": 0, "descartados": 0, "reserva_ms": 0.0}
@@ -110,6 +121,7 @@ class HapticBridge:
         self.timing = self._new_timing()
         self._timing_since = time.monotonic()
         self._timing_start = (0, 0)  # (reportes, underruns) al empezar la ventana
+        self._speaker_start = (0, 0)  # (cortes, descartes) de la bocina/audífonos al empezar la ventana
         self._last_feed_pc = None
         self.thread = threading.Thread(target=self._sender, name="haptics", daemon=True)
 
@@ -138,6 +150,7 @@ class HapticBridge:
         self._last_feed_pc = now
         samples = array.array("h")
         samples.frombytes(pcm[: len(pcm) - len(pcm) % (2 * USB_CHANNELS)])
+        self.timing["fed_frames"] += len(samples) // USB_CHANNELS
         if self.speaker is not None:
             try:
                 self.speaker.feed(samples[0::USB_CHANNELS], samples[1::USB_CHANNELS], mono=not self.headphones)
@@ -189,7 +202,8 @@ class HapticBridge:
             return
         if resumed and self._gap_reports <= MAX_JITTER_GAP:
             self.stats["underruns"] += 1
-            self.last_underrun = time.monotonic()
+            self.last_underrun = self._last_counted_underrun = time.monotonic()
+            self.floor = max(self.floor, self.prefill)  # recordar la reserva que hizo falta
         else:
             self.prefill -= self._gap_bump
             self._update_reserve_stat()
@@ -216,7 +230,10 @@ class HapticBridge:
 
     @staticmethod
     def _new_timing():
-        return {"feed_gap": 0.0, "iso_late": 0.0, "bt_write": 0.0, "sender_late": 0.0}
+        # fed_frames: frames USB recibidos (ritmo real del audio que entra); min_level: lo mínimo que tuvo el búfer
+        # al enviar (bytes); iso_idle: tiempo en que no había ningún URB de audio de Windows esperando (ms).
+        return {"feed_gap": 0.0, "iso_late": 0.0, "bt_write": 0.0, "sender_late": 0.0, "fed_frames": 0,
+                "min_level": None, "iso_idle": 0.0}
 
     def _maybe_report_timing(self):
         """Resumen periódico para diagnosticar microcortes (solo mientras se transmite háptica)."""
@@ -226,18 +243,37 @@ class HapticBridge:
         reports = self.stats["reportes"] - self._timing_start[0]
         underruns = self.stats["underruns"] - self._timing_start[1]
         t = self.timing
+        speaker = ""
+        if self.speaker is not None:
+            gaps, dropped = self.speaker.gaps, self.speaker.dropped
+            speaker = (f" | {'headphones' if self.headphones else 'speaker'}: {gaps - self._speaker_start[0]} gaps,"
+                       f" {dropped - self._speaker_start[1]} dropped")
+            self._speaker_start = (gaps, dropped)
+        elapsed = now - self._timing_since
+        level_ms = (t["min_level"] or 0) / FRAME_BYTES / HAPTIC_RATE * 1000
         log.info("last %.0f s: %d reports, %d underruns (concealed) | max: audio arrival gap %.1f ms, iso pacing"
-                 " late %.1f ms, BT write %.1f ms, sender late %.1f ms | reserve %.1f ms",
-                 now - self._timing_since, reports, underruns, t["feed_gap"], t["iso_late"], t["bt_write"],
-                 t["sender_late"], self.stats["reserva_ms"])
+                 " late %.1f ms, BT write %.1f ms, sender late %.1f ms | reserve %.1f ms%s | audio in %.4f s/s,"
+                 " buffer min %.1f ms, no URB queued %.0f ms",
+                 elapsed, reports, underruns, t["feed_gap"], t["iso_late"], t["bt_write"],
+                 t["sender_late"], self.stats["reserva_ms"], speaker, t["fed_frames"] / USB_RATE / elapsed,
+                 level_ms, t["iso_idle"])
         self.timing = self._new_timing()
         self._timing_since = now
         self._timing_start = (self.stats["reportes"], self.stats["underruns"])
 
-    def _maybe_shrink(self):
-        now = time.monotonic()
-        if now - self.last_underrun > STABLE_SECONDS and self.prefill > self.min_prefill:
-            self.prefill = max(self.min_prefill, self.prefill - PREFILL_STEP)
+    def _maybe_shrink(self, now=None):
+        """Sube rápido, baja despacio. La reserva baja un paso cada STABLE_SECONDS sin cortes, pero no por debajo
+        del "piso": la reserva a la que se llegó en el último tirón, que a su vez baja un paso cada
+        FLOOR_RELEASE_SECONDS sin cortes. Visto el 2026-11-21: tirones de todo el sistema de ~35-45 ms cada ~10
+        min; la reserva subía a 64 ms y en 5 min volvía al mínimo (10,7 ms), justo a tiempo para el siguiente."""
+        now = time.monotonic() if now is None else now
+        if self.floor > self.min_prefill and now - max(self._last_counted_underrun, self._floor_lowered) \
+                > FLOOR_RELEASE_SECONDS:
+            self.floor = max(self.min_prefill, self.floor - PREFILL_STEP)
+            self._floor_lowered = now
+        lowest = max(self.min_prefill, self.floor)
+        if now - self.last_underrun > STABLE_SECONDS and self.prefill > lowest:
+            self.prefill = max(lowest, self.prefill - PREFILL_STEP)
             self.last_underrun = now  # esperar otro periodo estable antes del siguiente paso
             self._update_reserve_stat()
 
@@ -252,6 +288,8 @@ class HapticBridge:
                     return None
                 self.streaming = True
                 return "start"
+            level, low = len(self.buf), self.timing.get("min_level")
+            self.timing["min_level"] = level if low is None else min(low, level)
             if len(self.buf) >= REPORT_BYTES:
                 chunk = bytes(self.buf[:REPORT_BYTES])
                 del self.buf[:REPORT_BYTES]
@@ -272,7 +310,13 @@ class HapticBridge:
             return have + self._conceal(REPORT_BYTES - len(have))
 
     def _sender(self):
-        rt.raise_thread_priority("haptics")
+        mmcss = rt.raise_thread_priority("haptics")
+        try:
+            self._send_loop()
+        finally:
+            rt.revert_thread_priority(mmcss)
+
+    def _send_loop(self):
         next_t = time.perf_counter()
         while self.running:
             chunk = self._next_chunk()
@@ -283,6 +327,8 @@ class HapticBridge:
                 if chunk == "start":
                     self._timing_since = time.monotonic()
                     self._timing_start = (self.stats["reportes"], self.stats["underruns"])
+                    if self.speaker is not None:
+                        self._speaker_start = (self.speaker.gaps, self.speaker.dropped)
                     self.timing = self._new_timing()
                 continue
             late = (time.perf_counter() - next_t) * 1000

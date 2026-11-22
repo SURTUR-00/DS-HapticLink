@@ -15,6 +15,7 @@ import threading
 import time
 
 from . import descriptors as D
+from .ds5bt import bt_crc
 from .profiles import builtin_profile, firmware_from_info_report, mac_from_pairing_report
 from .usbip import DIR_IN, EPIPE, DeviceInfo, UrbResult
 
@@ -25,6 +26,7 @@ FU_SPEAKER, FU_MIC = 0x02, 0x05
 UAC_SET_CUR, UAC_GET_CUR, UAC_GET_MIN, UAC_GET_MAX, UAC_GET_RES = 0x01, 0x81, 0x82, 0x83, 0x84
 FU_MUTE, FU_VOLUME = 0x01, 0x02
 ISO_PACKET_SECONDS = 0.001  # HS con bInterval 4 → un paquete cada 1 ms
+ISO_RESYNC_SECONDS = 0.2  # un URB más atrasado que esto: el stream se pausó; reiniciar el reloj del bus
 DEFAULT_LIGHTBAR = (0, 0, 128)  # azul: el color por defecto que pone el driver de Linux
 PLAYER_1 = 0x04  # LED de jugador central bajo el touchpad
 
@@ -35,6 +37,19 @@ LIVE_FEATURES = {0x05: 41, 0x09: 20, 0x0B: 42, 0x20: 64, 0x22: 64}
 
 # Reporte de entrada en reposo: sticks centrados, gatillos sueltos, cruceta neutra (8), sin botones
 NEUTRAL_INPUT = bytes([0x01, 0x80, 0x80, 0x80, 0x80, 0, 0, 0, 0x08]) + bytes(55)
+USB_BATTERY_OFFSET = 53  # byte de batería del reporte de entrada USB (= r[54] del reporte BT 0x31)
+# Batería "cargada" (estado 2, nivel 10): lo que reporta un DualSense conectado por cable con la carga completa.
+BATTERY_FULL = 0x2A
+
+
+def neutral_input(battery_byte=BATTERY_FULL):
+    """Reporte en reposo (sin botones, sticks centrados) con un byte de batería válido. Con la batería en 0
+    (0 %, descargando) Steam, que también ve el control virtual, avisaba "batería baja" mientras el control real
+    estaba apagado (visto el 2026-11-21 al salir de la app)."""
+    report = bytearray(NEUTRAL_INPUT)
+    report[USB_BATTERY_OFFSET] = battery_byte
+    return bytes(report)
+BT_INPUT_SIZE = 78  # reporte de entrada BT 0x31: id + 73 bytes + CRC32
 
 
 def _hid_descriptor(config):
@@ -87,6 +102,9 @@ class VirtualDualSense:
         self._mute_button = False
         self.bt_idle = False  # no llegan datos del control (apagado o fuera de rango)
         self.battery = None  # (porcentaje, "descargando" | "cargando" | "cargado" | "error")
+        self._battery_candidate, self._battery_since = None, 0.0  # lectura nueva aún sin confirmar
+        self._crc_seen = False  # ya llegó un reporte con CRC válido en esta conexión
+        self._battery_byte = BATTERY_FULL  # byte crudo de la última batería aceptada (para el reporte en reposo)
         self.lightbar = DEFAULT_LIGHTBAR  # color cuando ningún juego controla la barra (ajustable)
         self.speaker_boost = 0  # refuerzo de la bocina 0-7 (ajustable)
         self.mic_allowed = True  # el usuario permite usar el micrófono del control (ajustable)
@@ -108,7 +126,7 @@ class VirtualDualSense:
         self.mute = {FU_SPEAKER: 0, FU_MIC: 0}
         self.features = dict(self.profile.features)
         # Entrada: último reporte y URBs esperando uno nuevo
-        self.latest_input = NEUTRAL_INPUT
+        self.latest_input = neutral_input()
         self.input_fresh = False
         self.input_waiters = collections.deque()
         self.iso_clock = {}
@@ -139,6 +157,8 @@ class VirtualDualSense:
         self._apply_volume()
         self.ds.set_mute_light(self.mic_muted)  # conservar el estado del mute tras reconectar
         self.status_byte = None
+        self._crc_seen = False
+        self.battery = self._battery_candidate = None  # la primera lectura de esta conexión se muestra en el acto
         if self.alt.get(2) and self.mic_allowed:
             self.ds.send_mic_status(True)
 
@@ -285,7 +305,8 @@ class VirtualDualSense:
         """El control se apagó o salió de rango: soltar todo y vaciar el audio."""
         self.haptics.reset()
         # Soltar todo: si no, el juego vería presionado lo que estuviera presionado al desconectarse.
-        self.loop.call_soon_threadsafe(self._new_input, NEUTRAL_INPUT)
+        # Conservar la última batería que mostró el control real (si no, Steam vería 0 % y avisaría "batería baja").
+        self.loop.call_soon_threadsafe(self._new_input, neutral_input(self._battery_byte))
 
     def _check_idle(self, now):
         if not self.bt_idle and now - self._last_rx > self.IDLE_SECONDS:
@@ -324,21 +345,61 @@ class VirtualDualSense:
             if self.mic is not None:
                 self.mic.on_bt_frame(bytes(r[3:]))
             return
-        self._check_battery(r[54])
+        if not self._crc_valid(r):
+            return
+        self._check_battery(r[54], now)
         self._check_status(r[55])
         self._check_mute_button(bool(r[11] & 0x04))
         report = bytes([0x01]) + bytes(r[2:65])
         self.loop.call_soon_threadsafe(self._new_input, report)
 
-    BATTERY_STATES = {0x0: "descargando", 0x1: "cargando", 0x2: "cargado"}
+    def _crc_valid(self, r):
+        """CRC32 del reporte de entrada BT (semilla 0xA1, últimos 4 bytes), como el driver de Linux, que descarta
+        los reportes que no cuadran. Visto el 2026-11-21: un error de hardware del adaptador Bluetooth cortó el
+        enlace y justo antes llegó una lectura de batería falsa (aviso de "batería baja" con el control al 55%).
+        Por precaución, solo se descartan reportes después de haber visto al menos uno válido en esta conexión:
+        si este Windows entregara los reportes sin CRC, no se pierde nada."""
+        if len(r) < BT_INPUT_SIZE:
+            return True
+        r = bytes(r[:BT_INPUT_SIZE])
+        if bt_crc(r[:-4], header=0xA1) == r[-4:]:
+            if not self._crc_seen and not self.counters["bt_crc_ok_conexiones"]:
+                log.info("controller reports carry a valid CRC: corrupt ones will be discarded")
+            if not self._crc_seen:
+                self.counters["bt_crc_ok_conexiones"] += 1
+            self._crc_seen = True
+            return True
+        self.counters["bt_crc_mal"] += 1
+        if not self._crc_seen:
+            return True
+        if self.counters["bt_crc_mal"] in (1, 10, 100, 1000):
+            log.warning("discarded a corrupt report from the controller (bad CRC; %d so far)",
+                        self.counters["bt_crc_mal"])
+        return False
 
-    def _check_battery(self, value):
+    BATTERY_STATES = {0x0: "descargando", 0x1: "cargando", 0x2: "cargado"}
+    # Una lectura nueva de batería solo se acepta si se repite durante este tiempo: un reporte suelto (o la
+    # tensión que cae por un momento con vibración fuerte) no debe mover el medidor ni disparar el aviso.
+    BATTERY_SETTLE_SECONDS = 5.0
+
+    def _check_battery(self, value, now=None):
         """Nivel (0-10, bits 0-3) y estado de carga (bits 4-7). Igual que el driver de Linux: nivel × 10 + 5."""
+        now = time.monotonic() if now is None else now
         level = min(100, (value & 0x0F) * 10 + 5)
         state = self.BATTERY_STATES.get(value >> 4, "error")
         if state == "cargado":
             level = 100
-        self.battery = (level, state)
+        reading = (level, state)
+        if reading != self._battery_candidate:
+            self._battery_candidate, self._battery_since = reading, now
+        if reading == self.battery:
+            return
+        if self.battery is None or now - self._battery_since >= self.BATTERY_SETTLE_SECONDS:
+            log.info("battery %d%% (%s)%s", level, state,
+                     "" if self.battery is None else f", was {self.battery[0]}% ({self.battery[1]})")
+            self.battery = reading
+            if state != "error":
+                self._battery_byte = value
 
     def _check_status(self, status):
         """Audífonos conectados al jack del control (bit 0 del byte de estado)."""
@@ -427,7 +488,23 @@ class VirtualDualSense:
     async def _pace_iso(self, ep, packets):
         """Completa los URB isócronos al ritmo real (1 ms por paquete), como lo haría el hardware."""
         now = time.perf_counter()
-        start = max(now, self.iso_clock.get(ep, now))
+        clock = self.iso_clock.get(ep)
+        if ep == 1 and clock is not None and now > clock:
+            # No había ningún URB de Windows esperando: este paquete llegó tarde (diagnóstico)
+            timing = getattr(self.haptics, "timing", None)
+            idle = now - clock
+            if timing is not None and idle < 1.0:
+                timing["iso_idle"] = timing.get("iso_idle", 0.0) + idle * 1000
+        # El reloj del bus no se detiene, como en un USB real: si el URB llegó tarde, se completa en su lugar en la
+        # línea de tiempo (en el pasado, sin esperar) y el siguiente se pone al día. Antes se reiniciaba desde
+        # "ahora" y ese retraso se perdía: el control virtual consumía audio más lento que el tiempo real. Medido
+        # el 2026-11-21 en Economizador: entraban 0,9985 s de audio por segundo (~45 ms menos cada 30 s), el
+        # búfer de háptica se vaciaba aunque la reserva dijera 64 ms, y había cortes constantes. Solo tras una
+        # pausa larga (stream nuevo, carga del juego) se reinicia el reloj, para no mandar una ráfaga.
+        if clock is None or now - clock > ISO_RESYNC_SECONDS:
+            start = now
+        else:
+            start = clock
         end = start + packets * ISO_PACKET_SECONDS
         self.iso_clock[ep] = end
         await asyncio.sleep(max(0.0, end - now))

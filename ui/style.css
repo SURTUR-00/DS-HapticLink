@@ -167,6 +167,8 @@ select {
 .controller-settings { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .controller-settings label { display: grid; gap: 3px; }
 .badge.warn { color: var(--warn); border-color: var(--warn); }
+.card.notice { border-color: var(--warn); margin-top: 14px; }
+.card.notice h2 { color: var(--warn); margin: 0 0 4px; }
 
 .log {
   max-height: 220px; overflow: auto; margin: 12px 0 0; padding: 10px;

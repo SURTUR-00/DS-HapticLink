@@ -82,7 +82,7 @@ class BridgeService:
         # Este hilo atiende los URB de USB/IP, incluido el audio isócrono: necesita reloj de 1 ms y prioridad.
         rt.enable_high_resolution_timer()
         rt.raise_process_priority()
-        rt.raise_thread_priority("USB/IP")
+        mmcss = rt.raise_thread_priority("USB/IP")
         try:
             asyncio.run(self._main(ready))
         except Exception as e:
@@ -91,6 +91,7 @@ class BridgeService:
         finally:
             ready.set()
             self._cleanup()
+            rt.revert_thread_priority(mmcss)
             rt.disable_high_resolution_timer()
 
     async def _main(self, ready):

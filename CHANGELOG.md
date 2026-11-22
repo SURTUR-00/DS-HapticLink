@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.4.11
+
+- Fixed constant small audio and haptic cuts when Windows delivers the game audio in bursts (typical of the
+  *Power saver* plan): when an audio packet arrived late, the virtual USB clock restarted from that moment and the
+  delay was lost, so the virtual controller took in slightly less audio than real time (measured: 0.9985 s per
+  second, ~45 ms short every 30 s) and the haptic buffer slowly ran dry no matter how big the reserve was. The
+  clock now keeps running like real USB hardware and catches up. The 30-second log line now shows the incoming
+  audio rate, the lowest buffer level and how long no audio packet was queued.
+
+- Fixed stuttering audio (headphones/speaker) and more haptic micro-gaps after opening and closing the window during
+  a game: Windows 11 stops honoring the 1 ms timer for processes whose window is hidden, minimized or covered.
+  DS HapticLink now opts out of that power throttling (and of efficiency mode).
+
+- No more false "Low battery" notifications: controller input reports are checked with their CRC (corrupt ones
+  are discarded, as the Linux driver does), a new battery reading must hold for 5 s before it is shown, and the
+  notification only appears after the battery has stayed low for a minute. Battery changes are now logged.
+
+- Warns when Windows is saving power (the *Power saver* plan or a copy of it, the *Best power efficiency* power
+  mode, or energy saver): a card in the window with a button to the power options, a one-time notification, and
+  a line in the log and in *Copy diagnostics*. Power saving can slow down the CPU, USB and Bluetooth. If you use
+  power saving on purpose, *Don't warn me again* hides the warning (*General → Warn me if Windows is saving power*
+  brings it back); the log still records it.
+
+- Less CPU for the controller audio: about 45% less with headphones/speaker (exact integer resampling of both
+  channels at once, Opus encoding without copies) and about half for haptics (the filter uses `math.sumprod`).
+
+- The audio threads are registered with MMCSS ("Pro Audio"), the Windows service for real-time audio, so they keep
+  their turn on the CPU whichever window is in the foreground.
+
+- Fewer cuts from recurring system hiccups (~35-45 ms stalls, e.g. when switching windows during a game): the
+  haptic reserve still rises at once, but now falls back slowly (it remembers the reserve the last hiccup needed
+  and lowers it one step every 2 minutes without cuts) instead of returning to the minimum in about 5 minutes. The
+  headphone/speaker buffer was raised to match (it could drop audio when the reserve was high).
+
+- The 30-second haptics line in the log now also counts headphone/speaker cuts (gaps) and dropped audio.
+
+- Steam no longer warns "battery low" while the controller is off: the virtual controller's idle report carried a
+  battery of 0%. It now keeps the last battery level the controller reported ("full" before the first one).
+
 ## 0.4.10
 
 - No more console window flashing for a moment when DS HapticLink starts (`usbip.exe` was run without hiding its

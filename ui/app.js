@@ -33,6 +33,7 @@ function renderSettings() {
   $("autostart").checked = settings.autostart;
   $("start-minimized").checked = settings.start_minimized;
   $("notifications").checked = settings.notifications;
+  $("power-warning-toggle").checked = settings.power_warning !== false;
   $("language").value = settings.language;
   renderSwatches();
 }
@@ -77,6 +78,7 @@ function bindSettings() {
   $("autostart").onchange = (e) => setSetting("autostart", e.target.checked);
   $("start-minimized").onchange = (e) => setSetting("start_minimized", e.target.checked);
   $("notifications").onchange = (e) => setSetting("notifications", e.target.checked);
+  $("power-warning-toggle").onchange = (e) => setSetting("power_warning", e.target.checked);
   $("language").onchange = (e) => setSetting("language", e.target.value);
 }
 
@@ -145,6 +147,11 @@ function renderStatus(s) {
     el.textContent = text;
     $("badges").appendChild(el);
   }
+
+  // Aviso: Windows en modo de ahorro de energía (el audio y la háptica se entrecortan)
+  const power = s.power || {};
+  $("power-warning").hidden = !power.power_saver || (settings && settings.power_warning === false);
+  if (power.power_saver) $("power-text").textContent = tr("power." + power.reason, { name: power.name || "" });
 
   const st = s.stats || {};
   $("stats").textContent = s.stats ? tr("stats", {
@@ -299,6 +306,8 @@ async function init() {
   $("btn-install").onclick = () => api.run_setup();
   $("btn-test").onclick = () => api.test_rumble();
   $("btn-bt").onclick = () => api.open_bluetooth_settings();
+  $("btn-power").onclick = () => api.open_power_settings((lastStatus && lastStatus.power || {}).reason);
+  $("btn-power-dismiss").onclick = () => setSetting("power_warning", false);
   $("btn-pause").onclick = async () => { await api.toggle_pause(); };
   $("btn-quit").onclick = () => api.quit();
   const openUninstall = async (e) => { if (e) e.preventDefault(); await api.show_uninstall(true); poll(true); };

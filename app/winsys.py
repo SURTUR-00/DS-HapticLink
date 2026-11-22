@@ -150,3 +150,75 @@ def run_elevated(exe, args):
 
 def open_bluetooth_settings():
     os.startfile("ms-settings:bluetooth")
+
+
+def open_power_settings(reason=None):
+    """Donde se arregla cada caso: los planes están en el Panel de control; el modo de energía y el ahorro de
+    energía, en Configuración → Sistema → Energía."""
+    os.startfile("powercfg.cpl" if reason == "plan" else "ms-settings:powersleep")
+
+
+# ---------------------------------------------------------------------- plan de energía
+# El plan "Economizador" (o una copia suya), el modo "Mejor eficiencia energética" de Windows 11 y el "Ahorro de
+# energía" frenan el procesador y el USB/Bluetooth: el audio del puente llega tarde y se entrecorta. Visto en un
+# registro real (2026-11-21): PC de escritorio en Economizador sin que el usuario lo recordara.
+POWER_SAVER = "a1841308-3541-4fab-bc81-f71556f20b4a"  # SCHEME_MAX
+BEST_EFFICIENCY_OVERLAY = "961cc777-2547-4f9d-8174-7d86181b8a7a"  # modo de energía "Mejor eficiencia energética"
+PERSONALITY = "245d8541-3943-4422-b025-13a784f679b7"  # GUID_POWERSCHEME_PERSONALITY: plan base de cada combinación
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [("data", ctypes.c_ubyte * 16)]
+
+    @classmethod
+    def parse(cls, text):
+        import uuid
+        g = cls()
+        ctypes.memmove(g.data, uuid.UUID(text).bytes_le, 16)
+        return g
+
+    def __str__(self):
+        import uuid
+        return str(uuid.UUID(bytes_le=bytes(self.data)))
+
+
+class _SystemPowerStatus(ctypes.Structure):
+    _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte), ("BatteryLifePercent", ctypes.c_ubyte),
+                ("SystemStatusFlag", ctypes.c_ubyte), ("BatteryLifeTime", wintypes.DWORD),
+                ("BatteryFullLifeTime", wintypes.DWORD)]
+
+
+def power_plan():
+    """{"name", "guid", "power_saver": bool, "reason"} del plan de energía activo (None si no se pudo leer).
+    reason: "plan" (Economizador o una copia), "mode" (modo Mejor eficiencia) o "saver" (Ahorro de energía)."""
+    try:
+        pp = ctypes.WinDLL("powrprof")
+    except OSError:
+        return None
+    active = ctypes.POINTER(_GUID)()
+    if pp.PowerGetActiveScheme(None, ctypes.byref(active)) != 0:
+        return None
+    scheme = _GUID()
+    ctypes.memmove(scheme.data, active.contents.data, 16)
+    k32.LocalFree(active)
+    base, kind, size = _GUID(), wintypes.DWORD(), wintypes.DWORD(16)
+    personality = _GUID.parse(PERSONALITY)
+    if pp.PowerReadACValue(None, ctypes.byref(scheme), None, ctypes.byref(personality), ctypes.byref(kind),
+                           base.data, ctypes.byref(size)) != 0 or size.value != 16:
+        base = scheme
+    name_buf, name_size = (ctypes.c_ubyte * 512)(), wintypes.DWORD(512)
+    name = ""
+    if pp.PowerReadFriendlyName(None, ctypes.byref(scheme), None, None, name_buf, ctypes.byref(name_size)) == 0:
+        name = bytes(name_buf[:name_size.value]).decode("utf-16-le", "replace").rstrip("\0")
+    reason = None
+    if str(base) == POWER_SAVER or str(scheme) == POWER_SAVER:
+        reason = "plan"
+    else:
+        overlay = _GUID()
+        getter = getattr(pp, "PowerGetEffectiveOverlayScheme", None)  # Windows 10 1709+
+        if getter is not None and getter(ctypes.byref(overlay)) == 0 and str(overlay) == BEST_EFFICIENCY_OVERLAY:
+            reason = "mode"
+        status = _SystemPowerStatus()
+        if reason is None and k32.GetSystemPowerStatus(ctypes.byref(status)) and status.SystemStatusFlag == 1:
+            reason = "saver"
+    return {"name": name, "guid": str(scheme), "power_saver": reason is not None, "reason": reason}

@@ -92,6 +92,17 @@
       </div>
     </section>
 
+    <section class="card wide hero notice" id="power-warning" hidden>
+      <div class="hero-text">
+        <h2 data-i18n="power.title">Windows is saving power</h2>
+        <p class="muted small" id="power-text"></p>
+      </div>
+      <div class="hero-actions">
+        <button id="btn-power" data-i18n="power.open">Power options</button>
+        <button class="ghost" id="btn-power-dismiss" data-i18n="power.dismiss">Don't warn me again</button>
+      </div>
+    </section>
+
     <div class="grid">
       <section class="card">
         <h2 data-i18n="card.haptics"></h2>
@@ -129,6 +140,7 @@
         <label class="toggle"><input type="checkbox" id="autostart"><span></span><div data-i18n="general.autostart"></div></label>
         <label class="toggle"><input type="checkbox" id="start-minimized"><span></span><div data-i18n="general.minimized"></div></label>
         <label class="toggle"><input type="checkbox" id="notifications"><span></span><div data-i18n="general.notifications"></div></label>
+        <label class="toggle"><input type="checkbox" id="power-warning-toggle"><span></span><div data-i18n="general.power_warning"></div></label>
         <div class="field">
           <span class="muted small" data-i18n="general.uninstall.desc"></span>
           <button class="ghost danger" id="btn-uninstall" data-i18n="general.uninstall">Uninstall…</button>

@@ -21,6 +21,9 @@ DEFAULTS = {
     "mic_enabled": True,
     "start_minimized": True,  # al iniciar, ir directo a la bandeja
     "notifications": True,
+    # Avisar si Windows está ahorrando energía (tarjeta en la ventana + notificación). El usuario puede apagarlo
+    # (p. ej. usa el Economizador a propósito para que el PC no se caliente); el log lo registra igual.
+    "power_warning": True,
 }
 
 

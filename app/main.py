@@ -31,6 +31,8 @@ SETUP_STATUS_FILE = devrestart.REQUEST_FILE.with_name("setup_status.json")  # lo
 log = logging.getLogger("app")
 UI_DIR = app_dir() / "ui"  # junto al .exe compilado, o en la raíz del proyecto en desarrollo
 LOG_LINES = collections.deque(maxlen=400)
+BATTERY_LOW_CONFIRM_SECONDS = 60  # la batería tiene que seguir baja este tiempo antes de avisar
+POWER_CHECK_SECONDS = 30  # cada cuánto se revisa el plan de energía
 
 
 class MemoryLog(logging.Handler):
@@ -67,6 +69,7 @@ class Api:
         status["prerequisites"] = app.prereqs
         status["setup"] = self._app.setup_state
         status["uninstall"] = self._app.uninstall_state
+        status["power"] = app.power
         return status
 
     def get_settings(self):
@@ -122,6 +125,9 @@ class Api:
     def open_bluetooth_settings(self):
         winsys.open_bluetooth_settings()
 
+    def open_power_settings(self, reason=None):
+        winsys.open_power_settings(reason)
+
     def test_rumble(self):
         return self._app.service.test_rumble()
 
@@ -156,7 +162,9 @@ class DsxApp:
         self.tray = None
         self.tray_only = False
         self.last_state = None
-        self.notified = {"battery_low": False, "connected": None}
+        self.notified = {"battery_low": False, "battery_low_since": None, "connected": None}
+        self.power = None  # winsys.power_plan(): plan de energía activo
+        self._power_checked = -POWER_CHECK_SECONDS
         self.start_hidden = minimized and all(self.prereqs.values()) and not uninstall
 
     @property
@@ -333,22 +341,58 @@ class DsxApp:
             if self.tray is not None:
                 self.tray.notify(t(self.lang, "repair"), APP_NAME)
 
+    def _check_power(self):
+        """Plan de energía (cada 30 s): se registra al cambiar y devuelve True si acaba de pasar a ahorro."""
+        now = time.monotonic()
+        if now - self._power_checked < POWER_CHECK_SECONDS:
+            return False
+        self._power_checked = now
+        try:
+            power = winsys.power_plan()
+        except Exception:
+            log.debug("couldn't read the power plan", exc_info=True)
+            return False
+        previous, self.power = self.power, power
+        if power is None or (previous and (previous["guid"], previous["reason"]) == (power["guid"], power["reason"])):
+            return False
+        if power["power_saver"]:
+            log.warning("Windows is saving power (%s, power plan \"%s\"): if the controller audio or haptics"
+                        " stutter, try the Balanced plan", power["reason"], power["name"])
+        else:
+            log.info("power plan: %s", power["name"])
+        return power["power_saver"] and not (previous and previous["power_saver"])
+
     def _notifications(self):
         status = self.service.status()
         controller = status.get("controller") or {}
         self._check_components(controller)
+        power_saver_started = self._check_power()
         if not self.config.get("notifications") or self.tray is None:
             return
+        if power_saver_started and self.config.get("power_warning"):
+            self.tray.notify(t(self.lang, "power_saver"), APP_NAME)
         connected = bool(controller.get("connected"))
         previous = self.notified["connected"]
         if previous is not None and connected != previous:
             self.tray.notify(t(self.lang, "connected" if connected else "disconnected"), APP_NAME)
         self.notified["connected"] = connected
         battery = controller.get("battery")
-        low = battery is not None and battery <= 15 and controller.get("battery_state") == "descargando"
-        if low and not self.notified["battery_low"]:
+        low = (connected and battery is not None and battery <= 15
+               and controller.get("battery_state") == "descargando")
+        # Una batería baja de verdad dura muchos minutos: solo se avisa si la lectura se mantiene. Así no salta
+        # el aviso por una lectura suelta justo antes de perder el enlace (visto el 2026-11-21 con el control
+        # al 55%) ni por la caída de tensión de un momento con vibración fuerte.
+        now = time.monotonic()
+        if not low:
+            self.notified["battery_low_since"] = None
+        elif self.notified.get("battery_low_since") is None:
+            self.notified["battery_low_since"] = now
+        confirmed = low and now - self.notified["battery_low_since"] >= BATTERY_LOW_CONFIRM_SECONDS
+        if confirmed and not self.notified["battery_low"]:
+            log.info("low battery notification: %s%%", battery)
             self.tray.notify(t(self.lang, "battery_low", pct=battery), APP_NAME)
-        self.notified["battery_low"] = low
+        if confirmed or not low:
+            self.notified["battery_low"] = confirmed
 
     # ------------------------------------------------------------------ ventana
     def show_window(self):
@@ -409,7 +453,8 @@ class DsxApp:
     def diagnostics(self):
         status = self.service.status()
         lines = [f"{APP_NAME} {VERSION} | Windows {platform.version()} | Python {platform.python_version()}",
-                 f"prerequisites: {self.prereqs}", "status: " + json.dumps(status, ensure_ascii=False), ""]
+                 f"prerequisites: {self.prereqs}", f"power: {winsys.power_plan()}",
+                 "status: " + json.dumps(status, ensure_ascii=False), ""]
         return "\n".join(lines + list(LOG_LINES)[-200:])
 
     def run(self):

@@ -89,8 +89,12 @@ class OpusEncoder:
         self.out = ctypes.create_string_buffer(frame_bytes)
 
     def encode(self, interleaved):
-        """interleaved: FRAME × canales muestras int16. Devuelve exactamente frame_bytes (relleno con ceros)."""
-        pcm = (ctypes.c_int16 * len(interleaved))(*interleaved)
+        """interleaved: FRAME × canales muestras int16 (array('h') sin copiar, o lista).
+        Devuelve exactamente frame_bytes (relleno con ceros)."""
+        if isinstance(interleaved, array.array) and interleaved.typecode == "h":
+            pcm = (ctypes.c_int16 * len(interleaved)).from_buffer(interleaved)
+        else:
+            pcm = (ctypes.c_int16 * len(interleaved))(*interleaved)
         n = self.lib.opus_encode(self.st, pcm, FRAME, self.out, self.frame_bytes)
         if n <= 0:
             raise OSError(f"opus_encode failed ({n})")
@@ -122,41 +126,68 @@ class OpusDecoder:
             self.lib.opus_decoder_destroy(self.st)
 
 
-class LinearResampler:
-    """Re-muestreo lineal en streaming (un canal). step = muestras de entrada por muestra de salida."""
+class StereoResampler:
+    """Re-muestreo lineal en streaming de 512 → 480 frames (paso exacto 16/15), los dos canales a la vez.
 
-    def __init__(self, step=INPUT_FRAMES_PER_OPUS / FRAME):
-        self.step = step
-        self.pos = 0.0  # posición de la próxima salida, relativa al primer elemento del bloque nuevo
-        self.prev = 0  # última muestra del bloque anterior (índice -1)
+    Aritmética entera: la posición se lleva en quinceavos de muestra, así que no hay errores de redondeo que se
+    acumulen ni conversiones de float. Las posiciones se calculan una vez para ambos canales y la salida sale ya
+    intercalada (L, R) en un array int16 listo para Opus. Es ~3 veces más rápido que el bucle muestra a muestra
+    anterior: con audífonos era la mayor parte del trabajo del puente (medido: ~5 % de un núcleo)."""
 
-    def process(self, xs):
-        n = len(xs)
+    IN, OUT = INPUT_FRAMES_PER_OPUS // 32, FRAME // 32  # 16 muestras de entrada por cada 15 de salida
+
+    def __init__(self):
+        # Próxima salida, en 1/OUT de muestra, contando desde la última muestra del bloque anterior (índice 0).
+        # Al empezar no hay bloque anterior: la primera salida es la primera muestra nueva (índice 1).
+        self.pos = self.OUT
+        self.prev_l = self.prev_r = 0
+
+    def process(self, left, right=None):
+        """left/right: muestras int16 (right=None: mono, la misma señal en ambos canales).
+        Devuelve array('h') intercalado L, R."""
+        n = len(left)
         if n == 0:
-            return []
-        out = []
-        pos, prev, step = self.pos, self.prev, self.step
-        while pos < n - 1:
-            i = int(pos) if pos >= 0 else -1
-            frac = pos - i
-            a = prev if i < 0 else xs[i]
-            b = xs[i + 1]
-            out.append(a + (b - a) * frac)
-            pos += step
-        self.pos = pos - n
-        self.prev = xs[-1]
+            return array.array("h")
+        step, den = self.IN, self.OUT
+        start, end = self.pos, n * den  # índice 0 = muestra previa; el último índice usable es n - 1 (+1 = n)
+        count = (end - start + step - 1) // step if start < end else 0
+        positions = range(start, start + step * count, step)
+        idx = [p // den for p in positions]
+        frac = [p % den for p in positions]
+        xl = [self.prev_l]
+        xl += left
+        l_out = [xl[i] + (xl[i + 1] - xl[i]) * f // den for i, f in zip(idx, frac)]
+        out = array.array("h", bytes(4 * count))  # 2 × count muestras int16 en cero
+        out[0::2] = array.array("h", l_out)
+        if right is None:
+            out[1::2] = out[0::2]
+            self.prev_l = self.prev_r = xl[-1]
+        else:
+            xr = [self.prev_r]
+            xr += right
+            out[1::2] = array.array("h", [xr[i] + (xr[i + 1] - xr[i]) * f // den for i, f in zip(idx, frac)])
+            self.prev_l, self.prev_r = xl[-1], xr[-1]
+        self.pos = start + step * count - end
         return out
 
 
 class SpeakerPath:
     """Audio de bocina/audífonos: PCM USB → tramas Opus listas para el reporte 0x39."""
 
-    def __init__(self, max_frames=6):
+    # Tope del búfer en tramas de 10 ms. Las tramas se consumen al ritmo de la háptica, así que el búfer sigue a
+    # la reserva de háptica (hasta 64 ms + 2 reportes ≈ 107 ms): con un tope menor se descartaba audio (saltos)
+    # justo cuando la reserva estaba alta para aguantar un tirón.
+    def __init__(self, max_frames=12):
         self.encoder = OpusEncoder(2)
-        self.left, self.right = LinearResampler(), LinearResampler()
-        self.pending = []  # muestras re-muestreadas aún sin completar una trama (intercaladas L/R)
+        self.resampler = StereoResampler()
+        self.pending = array.array("h")  # muestras re-muestreadas aún sin completar una trama (intercaladas L/R)
         self.frames = collections.deque(maxlen=max_frames)  # (bytes opus, es_silencio)
         self.encoded = 0
+        # Diagnóstico (el log de háptica los muestra cada 30 s): reportes que salieron sin audio porque no había
+        # tramas (corte audible) y tramas descartadas porque el búfer estaba lleno (salto/chasquido audible).
+        self.gaps = 0
+        self.dropped = 0
+        self._flowing = False
 
     def feed(self, left, right, mono=False):
         """left/right: muestras int16 a 48 kHz de los canales 1 y 2 del audio USB.
@@ -164,24 +195,24 @@ class SpeakerPath:
         así que se mezclan ambos canales y se manda la mezcla a los dos (si no, lo del canal izquierdo
         apenas se oiría). Con audífonos en el jack se conserva el estéreo."""
         if mono:
-            mixed = [(a + b) >> 1 for a, b in zip(left, right)]
-            rl = self.left.process(mixed)
-            self.right.process(mixed)  # mantener el estado de ambos re-muestreadores alineado
-            rr = rl
+            self.pending += self.resampler.process([(a + b) >> 1 for a, b in zip(left, right)])
         else:
-            rl, rr = self.left.process(left), self.right.process(right)
-        for a, b in zip(rl, rr):
-            self.pending.append(int(a))
-            self.pending.append(int(b))
+            self.pending += self.resampler.process(left, right)
         while len(self.pending) >= FRAME * 2:
-            block, self.pending = self.pending[:FRAME * 2], self.pending[FRAME * 2:]
+            block = self.pending[:FRAME * 2]
+            del self.pending[:FRAME * 2]
             silent = not any(block)
+            if len(self.frames) == self.frames.maxlen:
+                self.dropped += 1  # append() va a descartar la trama más vieja
             self.frames.append((None if silent else self.encoder.encode(block), silent))
             self.encoded += 1
+            self._flowing = True
 
     def pop_pair(self):
         """Dos tramas (400 bytes) para el siguiente reporte, o None si no hay o ambas son silencio."""
         if len(self.frames) < 2:
+            if self._flowing:  # ya había audio: este reporte sale sin sonido (antes del primero no cuenta)
+                self.gaps += 1
             return None
         (a, sa), (b, sb) = self.frames.popleft(), self.frames.popleft()
         if sa and sb:
@@ -196,8 +227,9 @@ class SpeakerPath:
 
     def reset(self):
         self.frames.clear()
-        self.pending = []
-        self.left, self.right = LinearResampler(), LinearResampler()
+        self.pending = array.array("h")
+        self.resampler = StereoResampler()
+        self._flowing = False  # el stream se cerró: el próximo arranque no cuenta como corte
 
 
 class MicPath:
