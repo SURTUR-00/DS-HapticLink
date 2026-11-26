@@ -4,6 +4,7 @@ Referencias: DS5Dongle (awalol), SAxense (egormanga), driver hid-playstation de 
   - 0x31: reporte de estado (LED, gatillos, rumble), 78 bytes con CRC32.
   - 0x32: reporte de audio con háptica: PCM estéreo int8 a 3000 Hz, 64 bytes (32 frames) por reporte.
 """
+import collections
 import math
 import struct
 import threading
@@ -11,6 +12,12 @@ import time
 import zlib
 
 import hid
+
+# Tráfico Bluetooth hacia el control (toda la sesión, sobrevive a reconexiones): paquetes y bytes escritos, y
+# reportes de estado del juego que no se reenviaron por ser idénticos al anterior. El log de háptica lo resume.
+TRAFFIC = collections.Counter()
+# Un estado idéntico al último enviado se vuelve a mandar como mucho cada este tiempo (refresco de seguridad).
+STATE_REFRESH_SECONDS = 0.25
 
 SONY_VID = 0x054C
 DUALSENSE_PIDS = (0x0CE6, 0x0DF2)
@@ -72,9 +79,14 @@ class DualSenseBT:
     def __init__(self, info, exclusive=False):
         """exclusive=True: abrir el control en exclusiva (winhid) para que ningún otro programa pueda usarlo.
         Lanza winhid.ExclusiveAccessError si otro programa ya lo tiene abierto."""
+        self.output_sizes = {}  # {ID: tamaño} de los reportes de salida que declara el control
         if exclusive:
-            from .winhid import WinHidDevice
+            from .winhid import WinHidDevice, output_report_sizes
             self.dev = WinHidDevice(info["path"].decode(), exclusive=True)
+            try:
+                self.output_sizes = output_report_sizes(self.dev.handle)
+            except OSError:
+                self.output_sizes = {}
         else:
             self.dev = hid.device()
             self.dev.open_path(info["path"])
@@ -106,6 +118,8 @@ class DualSenseBT:
             n = self.dev.write(bytes(buf))
             if n < 0:
                 raise OSError(f"write failed: {self.dev.error()}")
+            TRAFFIC["packets"] += 1
+            TRAFFIC["bytes"] += size
             return n, (time.perf_counter() - t0) * 1000
 
     def get_feature(self, report_id: int, size: int) -> bytes:
@@ -124,9 +138,20 @@ class DualSenseBT:
             return self.dev.send_feature_report(bytes(buf))
 
     def send_usb_output(self, usb_report: bytes):
-        """Traduce un reporte de salida USB 0x02 (estado: LED, gatillos, rumble) a BT 0x31."""
+        """Traduce un reporte de salida USB 0x02 (estado: LED, gatillos, rumble) a BT 0x31.
+
+        Los juegos mandan el estado en cada cuadro aunque no cambie (medido el 2026-11-23: ~92 por segundo), y
+        el control conserva el último que recibió. Repetirlo solo carga el Bluetooth (que comparte radio con
+        audífonos Bluetooth, y cuyo adaptador falló varias veces en sesiones largas), así que un estado idéntico
+        al último enviado se omite, salvo un refresco cada STATE_REFRESH_SECONDS. Devuelve None si se omitió."""
         state = bytes(usb_report[1:48])
-        return self.write_report(0x31, lambda seq: bytes([seq, 0x10]) + state, 78)
+        now = time.perf_counter()
+        if state == getattr(self, "_last_state", None) and now - self._last_state_time < STATE_REFRESH_SECONDS:
+            TRAFFIC["state_skipped"] += 1
+            return None
+        result = self.write_report(0x31, lambda seq: bytes([seq, 0x10]) + state, 78)
+        self._last_state, self._last_state_time = state, now
+        return result
 
     def set_state(self, flags0=0, flags1=0, flags2=0, rumble=(0, 0), right=None, left=None,
                   lightbar_setup=0, brightness=0, player=0, rgb=(0, 0, 0), extra=None):
@@ -145,7 +170,11 @@ class DualSenseBT:
         state[44:47] = bytes(rgb)
         for index, value in (extra or {}).items():
             state[index] = value
-        return self.write_report(0x31, lambda seq: bytes([seq, 0x10]) + state, 78)
+        result = self.write_report(0x31, lambda seq: bytes([seq, 0x10]) + state, 78)
+        # El puente cambió el estado del control por su cuenta (luces, volumen...): el próximo estado del juego se
+        # manda aunque sea igual al último que mandó el juego.
+        self._last_state, self._last_state_time = bytes(state), time.perf_counter()
+        return result
 
     def release_lightbar(self):
         """Secuencia del driver de Linux: liberar los LED y desvanecer la barra controlada por el firmware."""
@@ -184,7 +213,27 @@ class DualSenseBT:
         if speaker:
             assert len(speaker) == 2 * SPEAKER_OPUS_BYTES
             audio = bytes([(0x16 if headphones else 0x13) | 0x80 | 0x40, SPEAKER_OPUS_BYTES]) + speaker
-        return self.write_report(0x39, lambda seq: bytes([seq]) + packet_11 + packet_12 + audio, 547)
+        report_id, size = (0x39, 547) if audio else self.haptic_only_report
+        return self.write_report(report_id, lambda seq: bytes([seq]) + packet_11 + packet_12 + audio, size)
+
+    # Un reporte solo de háptica ocupa 1 (ID) + 1 (seq) + 9 (paquete 0x11) + 130 (paquete 0x12) + 4 (CRC) bytes.
+    HAPTIC_ONLY_BYTES = 1 + 1 + 9 + 2 + 2 * HAPTIC_CHUNK + 4
+
+    @property
+    def haptic_only_report(self):
+        """(ID, tamaño) del reporte más chico que declara el control y en el que cabe la háptica sin audio.
+
+        Los reportes 0x32…0x39 tienen el mismo formato de paquetes y solo cambian de tamaño (142, 206… 547), y
+        Windows transmite por el aire el tamaño del ID, no el relleno (comprobado con BTVS el 2026-11-23). Sin
+        audio para la bocina/audífonos, la háptica cabe en un 0x33 (206 B) en vez del 0x39 (547 B): ~62 % menos
+        tiempo de radio por reporte. No cabe en el 0x32 (142 B), por eso ahí no funcionaba el paquete 0xD2 de
+        128 bytes. Si no se pudieron leer los tamaños del control, se usa el 0x39 de siempre."""
+        sizes = getattr(self, "output_sizes", None) or {}
+        fits = [(size, rid) for rid, size in sizes.items() if 0x32 <= rid <= 0x39 and size >= self.HAPTIC_ONLY_BYTES]
+        if not fits:
+            return 0x39, 547
+        size, rid = min(fits)
+        return rid, size
 
     def send_mic_status(self, enabled: bool):
         """Enciende o apaga el envío del micrófono (paquete 0x11 de 1 byte en un reporte 0x32)."""

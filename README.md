@@ -116,10 +116,10 @@ others in [Issues](../../issues)!
   (Controller audio card, applies after restarting DS HapticLink). The haptics stay the same and the controller
   link carries much less data, which leaves more Bluetooth room for the headphones; both share the same adapter.
   Using 5 GHz Wi-Fi instead of 2.4 GHz also helps.
-- **Power saving:** since 0.4.11, audio and haptics are steady on the *Power saver* plan too. DS HapticLink shows a
-  card when Windows is saving power. If you use power saving on purpose, click **Don't warn me again**. If you
-  ever hear cuts, try the *Balanced* plan and send **Copy diagnostics**: the log shows the incoming audio rate and
-  the buffer level every 30 seconds.
+- **Power saving:** DS HapticLink shows a card when Windows is saving power (if that's on purpose, click
+  **Don't warn me again**). If you limit your CPU on purpose (*Power saver*, or a *Maximum processor state* below
+  100%) and feel small gaps in the haptics, try the default *Balanced* plan. If you need the CPU cooler or quieter,
+  limiting its power (for example AMD *Eco Mode*) usually affects the haptics less than limiting its speed.
 - **One controller at a time.**
 - **After quitting DS HapticLink**, Game Bar and apps using GameInput may not see the controller until you turn it
   off and on again. Games that open the controller themselves see it right away.

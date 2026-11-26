@@ -82,6 +82,60 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(out[3:50], bytes(usb[1:48]))
         self.assertTrue(crc_ok(out))
 
+    def test_haptics_without_audio_use_the_smallest_report_that_fits(self):
+        ds = fake_dualsense()
+        samples = bytes(range(128))
+        ds.send_haptics_39(samples)  # sin tamaños leídos del control: el 0x39 de siempre
+        self.assertEqual((ds.dev.writes[-1][0], len(ds.dev.writes[-1])), (0x39, 547))
+        # Tamaños que declara el DualSense por Bluetooth (DOCUMENTACION.md §5.1)
+        ds.output_sizes = {0x31: 78, 0x32: 142, 0x33: 206, 0x34: 270, 0x35: 334, 0x36: 398, 0x37: 462,
+                           0x38: 526, 0x39: 547}
+        ds.send_haptics_39(samples)
+        out = ds.dev.writes[-1]
+        self.assertEqual((out[0], len(out)), (0x33, 206))  # 128 bytes de háptica no caben en el 0x32 (142)
+        self.assertEqual(out[10:12], bytes([0xD2, 64]))  # mismo formato que en el 0x39
+        self.assertEqual(out[12:140], samples)
+        self.assertTrue(crc_ok(out))
+        ds.send_haptics_39(samples, speaker=bytes(400))  # con audio de la bocina: hace falta el 0x39
+        self.assertEqual((ds.dev.writes[-1][0], len(ds.dev.writes[-1])), (0x39, 547))
+
+    def test_silent_haptics_stop_after_a_short_tail(self):
+        from bridge import haptics as H
+        hb = HapticBridge(ds=None)
+        silence, buzz = bytes(REPORT_BYTES), bytes([5, 5] * 64)
+        sent = [hb._should_send(silence, None) for _ in range(10)]
+        self.assertEqual(sent, [True] * H.SILENT_TAIL_REPORTS + [False] * (10 - H.SILENT_TAIL_REPORTS))
+        self.assertTrue(hb._should_send(buzz, None))  # vuelve la vibración: se manda en el acto
+        self.assertTrue(hb._should_send(silence, None))  # y la cola de silencio empieza de nuevo
+        self.assertTrue(hb._should_send(silence, bytes(400)))  # con audio de la bocina siempre se manda
+        hb.mic_enabled = True
+        self.assertTrue(all(hb._should_send(silence, None) for _ in range(10)))  # micrófono abierto
+
+    def test_repeated_game_state_is_not_resent(self):
+        from unittest import mock
+        from bridge import ds5bt
+        ds = fake_dualsense()
+        report = bytes([0x02, 0x03, 0x04]) + bytes(45)
+        clock = [100.0]
+        with mock.patch.object(ds5bt.time, "perf_counter", side_effect=lambda: clock[0]):
+            skipped = ds5bt.TRAFFIC["state_skipped"]
+            ds.send_usb_output(report)
+            for _ in range(5):  # el juego repite el mismo estado en cada cuadro
+                clock[0] += 0.011
+                self.assertIsNone(ds.send_usb_output(report))
+            self.assertEqual(len(ds.dev.writes), 1)
+            self.assertEqual(ds5bt.TRAFFIC["state_skipped"] - skipped, 5)
+            changed = bytes([0x02, 0x03, 0x04, 0x80]) + bytes(44)  # cambió el rumble: se manda en el acto
+            ds.send_usb_output(changed)
+            self.assertEqual(len(ds.dev.writes), 2)
+            clock[0] += 0.30  # refresco de seguridad: el mismo estado se vuelve a mandar cada 0,25 s
+            ds.send_usb_output(changed)
+            self.assertEqual(len(ds.dev.writes), 3)
+            ds.set_lights((255, 0, 0))  # el puente cambió las luces por su cuenta
+            ds.send_usb_output(changed)  # el estado del juego se manda aunque sea igual al último del juego
+            self.assertEqual(len(ds.dev.writes), 5)
+            self.assertEqual(ds.dev.writes[-1][3:50], changed[1:48])
+
     def test_haptics_report_layout(self):
         ds = fake_dualsense()
         ds.send_haptics_39(bytes(range(128)))

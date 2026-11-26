@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.12
+
+- Less Bluetooth traffic to the controller: games send the controller state (lights, triggers, rumble) every
+  frame even when nothing changed (~92 times per second), and DS HapticLink forwarded every copy. Repeated
+  states are now skipped, with a safety refresh every 0.25 s. This leaves more room on the adapter, which is shared
+  with Bluetooth headphones and failed a few times during long sessions.
+- Lighter haptics over Bluetooth:
+  - Silence is no longer transmitted. When the haptics are silent and the controller has no speaker/headphone
+    audio or open microphone to play, a few silent reports are still sent and then nothing until vibration
+    returns. About 56% of the haptic reports were silence in a measured session.
+  - Without controller audio, the haptics travel in the smallest report the controller declares that fits them
+    (0x33, 206 bytes) instead of 0x39 (547 bytes). A Bluetooth capture showed that Windows sends each report's
+    own size over the air, not the padding.
+- The 30-second log line shows the Bluetooth traffic to the controller (packets/s, kbit/s, repeated states
+  skipped, silent haptic reports and how many were not sent). The controller's output report sizes and the
+  report chosen for haptics are logged when it connects.
+
 ## 0.4.11
 
 - Fixed constant small audio and haptic cuts when Windows delivers the game audio in bursts (typical of the

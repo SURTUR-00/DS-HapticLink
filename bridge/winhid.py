@@ -79,6 +79,31 @@ hiddll.HidP_GetValueCaps.argtypes = [ctypes.c_int, ctypes.POINTER(HIDP_VALUE_CAP
 HIDP_OUTPUT, HIDP_FEATURE = 1, 2
 
 
+def output_report_sizes(handle):
+    """Output reports que declara un dispositivo HID: {id: tamaño con el ID}, o {} si no se pueden leer.
+    Basta un handle abierto sin acceso a datos (solo consulta), así que funciona aunque otro lo tenga en exclusiva.
+    Por Bluetooth, Windows rellena cada escritura hasta el reporte más grande pero transmite solo el tamaño del
+    reporte que indica el ID (comprobado con una captura de BTVS el 2026-11-23): elegir un ID más chico ahorra
+    tiempo de radio."""
+    preparsed = ctypes.c_void_p()
+    if not hiddll.HidD_GetPreparsedData(handle, ctypes.byref(preparsed)):
+        return {}
+    try:
+        caps = HIDP_CAPS()
+        hiddll.HidP_GetCaps(preparsed, ctypes.byref(caps))
+        count = caps.Fields[5]  # NumberOutputValueCaps
+        sizes = {}
+        if count:
+            arr = (HIDP_VALUE_CAPS * count)()
+            n = wintypes.USHORT(count)
+            hiddll.HidP_GetValueCaps(HIDP_OUTPUT, arr, ctypes.byref(n), preparsed)
+            for vc in arr[:n.value]:
+                sizes[vc.ReportID] = sizes.get(vc.ReportID, 0) + vc.BitSize * vc.ReportCount // 8
+        return {rid: size + 1 for rid, size in sorted(sizes.items())}
+    finally:
+        hiddll.HidD_FreePreparsedData(preparsed)
+
+
 def feature_report_sizes(device):
     """Feature reports que declara un dispositivo HID abierto: ({id: tamaño con el ID}, tamaño de salida)."""
     preparsed = ctypes.c_void_p()

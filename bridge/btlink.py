@@ -68,6 +68,11 @@ class BtLink:
             except OSError:
                 pass
             self.ds, self.info = ds, info
+            sizes = getattr(ds, "output_sizes", None)
+            if sizes:
+                rid, size = ds.haptic_only_report
+                log.info("output reports: %s | haptics without controller audio go in 0x%02X (%d bytes)",
+                         " ".join(f"0x{r:02X}={s}" for r, s in sizes.items()), rid, size)
         if self.on_connect:
             try:
                 self.on_connect(info)

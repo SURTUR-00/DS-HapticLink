@@ -508,7 +508,11 @@ class VirtualDualSense:
         end = start + packets * ISO_PACKET_SECONDS
         self.iso_clock[ep] = end
         await asyncio.sleep(max(0.0, end - now))
-        if ep == 1:  # diagnóstico de microcortes: cuánto se pasó la pausa del momento que tocaba
+        # Diagnóstico de microcortes: cuánto se pasó la pausa del momento que tocaba. Solo cuenta si hubo que
+        # esperar: si el URB llegó tarde y se completó al instante para ponerse al día, ese retraso es de Windows
+        # (ya lo mide "no URB queued"), no de la pausa. Antes, al reabrirse el audio, salían falsos picos de
+        # ~150 ms (visto el 2026-11-23 a las 14:34:55, al empezar a cargar el control).
+        if ep == 1 and end > now:
             timing = getattr(self.haptics, "timing", None)
             if timing is not None:
                 timing["iso_late"] = max(timing["iso_late"], (time.perf_counter() - end) * 1000)

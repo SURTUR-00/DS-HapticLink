@@ -15,7 +15,7 @@ import threading
 import time
 
 from . import rt
-from .ds5bt import CHUNK_PERIOD, HAPTIC_CHUNK
+from .ds5bt import CHUNK_PERIOD, HAPTIC_CHUNK, TRAFFIC
 
 log = logging.getLogger("haptics")
 
@@ -34,6 +34,7 @@ MAX_JITTER_GAP = 2  # huecos de hasta 2 reportes (≈ 43 ms) seguidos de más au
 # Ocultamiento de huecos: en vez de silencio, se repite la última vibración enviada desvaneciéndola a cero en
 # este número de frames (≈ 43 ms). Un hueco corto en una vibración continua deja de sentirse como un "bache".
 CONCEAL_FRAMES = 128
+SILENT_TAIL_REPORTS = 5  # reportes de silencio (≈ 107 ms) que se mandan igual antes de dejar de transmitir
 TIMING_REPORT_SECONDS = 30.0  # cada cuánto se registra el resumen de tiempos mientras hay háptica
 
 
@@ -83,6 +84,12 @@ class Decimator:
         return out
 
 
+def _traffic_snapshot():
+    """(paquetes, bytes, estados omitidos, reportes hápticos, en silencio, no enviados) del tráfico Bluetooth."""
+    return tuple(TRAFFIC[k] for k in ("packets", "bytes", "state_skipped", "haptic", "haptic_silent",
+                                      "haptic_skipped"))
+
+
 def _to_int8(value, gain):
     v = int(value * gain)
     return (127 if v > 127 else -128 if v < -128 else v) & 0xFF
@@ -116,12 +123,14 @@ class HapticBridge:
         self._update_reserve_stat()
         self._history = bytes(REPORT_BYTES)  # último bloque enviado (fuente del ocultamiento)
         self._conceal_pos = 0  # frames ya ocultados en el hueco actual
+        self._silent_run = 0  # reportes seguidos sin nada que reproducir (ver _should_send)
         # Diagnóstico de microcortes: máximos de la ventana actual (ms). Lo actualizan también virtual_ds5
         # (pacing de los URB isócronos) y el hilo emisor.
         self.timing = self._new_timing()
         self._timing_since = time.monotonic()
         self._timing_start = (0, 0)  # (reportes, underruns) al empezar la ventana
         self._speaker_start = (0, 0)  # (cortes, descartes) de la bocina/audífonos al empezar la ventana
+        self._traffic_start = _traffic_snapshot()  # TRAFFIC al empezar la ventana
         self._last_feed_pc = None
         self.thread = threading.Thread(target=self._sender, name="haptics", daemon=True)
 
@@ -251,12 +260,18 @@ class HapticBridge:
             self._speaker_start = (gaps, dropped)
         elapsed = now - self._timing_since
         level_ms = (t["min_level"] or 0) / FRAME_BYTES / HAPTIC_RATE * 1000
+        traffic = _traffic_snapshot()
+        packets, sent_bytes, skipped, haptic, silent, not_sent = (
+            a - b for a, b in zip(traffic, self._traffic_start))
+        self._traffic_start = traffic
         log.info("last %.0f s: %d reports, %d underruns (concealed) | max: audio arrival gap %.1f ms, iso pacing"
                  " late %.1f ms, BT write %.1f ms, sender late %.1f ms | reserve %.1f ms%s | audio in %.4f s/s,"
-                 " buffer min %.1f ms, no URB queued %.0f ms",
+                 " buffer min %.1f ms, no URB queued %.0f ms | BT out %.0f packets/s, %.0f kbit/s,"
+                 " %.0f repeated states/s skipped, %.0f%% of haptic reports silent (%.0f%% not sent)",
                  elapsed, reports, underruns, t["feed_gap"], t["iso_late"], t["bt_write"],
                  t["sender_late"], self.stats["reserva_ms"], speaker, t["fed_frames"] / USB_RATE / elapsed,
-                 level_ms, t["iso_idle"])
+                 level_ms, t["iso_idle"], packets / elapsed, sent_bytes * 8 / 1000 / elapsed, skipped / elapsed,
+                 100 * silent / haptic if haptic else 0, 100 * not_sent / haptic if haptic else 0)
         self.timing = self._new_timing()
         self._timing_since = now
         self._timing_start = (self.stats["reportes"], self.stats["underruns"])
@@ -316,6 +331,21 @@ class HapticBridge:
         finally:
             rt.revert_thread_priority(mmcss)
 
+    def _should_send(self, chunk, speaker):
+        """Si hay que mandar este reporte. Con la vibración en cero, sin audio para la bocina/audífonos y sin el
+        micrófono abierto, el reporte no lleva nada: tras unos pocos de cola (para que la vibración termine
+        limpia) se dejan de mandar hasta que vuelva algo. Medido el 2026-11-23: ~56 % de los reportes eran
+        silencio (27-100 % según la escena), y cada uno ocupa el Bluetooth con 548 bytes."""
+        if speaker is not None or self.mic_enabled or any(chunk):
+            self._silent_run = 0
+            return True
+        TRAFFIC["haptic_silent"] += 1
+        self._silent_run += 1
+        if self._silent_run <= SILENT_TAIL_REPORTS:
+            return True
+        TRAFFIC["haptic_skipped"] += 1
+        return False
+
     def _send_loop(self):
         next_t = time.perf_counter()
         while self.running:
@@ -329,16 +359,19 @@ class HapticBridge:
                     self._timing_start = (self.stats["reportes"], self.stats["underruns"])
                     if self.speaker is not None:
                         self._speaker_start = (self.speaker.gaps, self.speaker.dropped)
+                    self._traffic_start = _traffic_snapshot()
                     self.timing = self._new_timing()
                 continue
             late = (time.perf_counter() - next_t) * 1000
             self.timing["sender_late"] = max(self.timing["sender_late"], late)
             speaker = self.speaker.pop_pair() if self.speaker is not None else None
-            # BtLink descarta en silencio si no hay control conectado (devuelve None)
-            result = self.ds.send_haptics_39(chunk, speaker=speaker, headphones=self.headphones,
-                                             mic=self.mic_enabled)
-            if isinstance(result, tuple) and len(result) == 2:
-                self.timing["bt_write"] = max(self.timing["bt_write"], result[1])
+            TRAFFIC["haptic"] += 1
+            if self._should_send(chunk, speaker):
+                # BtLink descarta en silencio si no hay control conectado (devuelve None)
+                result = self.ds.send_haptics_39(chunk, speaker=speaker, headphones=self.headphones,
+                                                 mic=self.mic_enabled)
+                if isinstance(result, tuple) and len(result) == 2:
+                    self.timing["bt_write"] = max(self.timing["bt_write"], result[1])
             self.stats["reportes"] += 1
             self._maybe_shrink()
             self._maybe_report_timing()
